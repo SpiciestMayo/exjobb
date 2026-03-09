@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Code Review</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-container">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-inner">
+        <div class="logo">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="16 18 22 12 16 6"></polyline>
+            <polyline points="8 6 2 12 8 18"></polyline>
+          </svg>
+          <span>AI Code Review</span>
+        </div>
+        <div class="header-badge">Prototype</div>
+      </div>
+    </header>
+
+    <!-- Main layout -->
+    <main class="main-layout">
+
+      <!-- Left panel: Upload + Settings -->
+      <aside class="left-panel">
+        <section class="card">
+          <h2 class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Upload Files
+            <button class="info-btn" id="open-info-modal" title="How to download the required files">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="8"/><line x1="12" y1="12" x2="12" y2="16"/></svg>
+              How to download
+            </button>
+          </h2>
+
+          <!-- Step 1: Diff file -->
+          <p class="upload-step-label"><span class="step-num">1</span> PR Diff <span class="required-tag">required</span></p>
+          <div class="upload-area" id="upload-area">
+            <input type="file" id="file-input" accept=".diff,.patch,.txt" hidden />
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <p>Drag &amp; drop <code>.diff</code> / <code>.patch</code></p>
+            <button class="btn btn-outline" onclick="document.getElementById('file-input').click()">Browse</button>
+          </div>
+          <div class="file-info" id="file-info" style="display:none;">
+            <div class="file-info-inner">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <span id="file-name">No file selected</span>
+              <button class="btn-icon" id="remove-file" title="Remove">✕</button>
+            </div>
+          </div>
+
+          <!-- Step 2: Source files -->
+          <p class="upload-step-label" style="margin-top:14px;"><span class="step-num">2</span> Full Source Files <span class="optional-tag-sm">optional — improves accuracy</span></p>
+          <div class="upload-area upload-area-sm" id="src-upload-area">
+            <input type="file" id="src-file-input" accept=".*" multiple hidden />
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            <p>Drag &amp; drop source files or a folder</p>
+            <button class="btn btn-outline" onclick="document.getElementById('src-file-input').click()">Browse Files</button>
+          </div>
+          <div id="src-file-list" class="src-file-list" style="display:none;"></div>
+        </section>
+
+        <!-- How-to modal -->
+        <div class="modal-backdrop" id="info-modal" style="display:none;">
+          <div class="modal">
+            <div class="modal-header">
+              <h3>How to download the required files</h3>
+              <button class="modal-close" id="close-info-modal">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="how-step">
+                <div class="how-step-num">1</div>
+                <div>
+                  <strong>Download the PR diff</strong>
+                  <p>Open the Pull Request on GitHub. Append <code>.diff</code> to the URL and save the file.</p>
+                  <div class="code-example">https://github.com/owner/repo/pull/123<strong>.diff</strong></div>
+                  <p class="how-note">Or use <code>.patch</code> for the email-style patch format.</p>
+                </div>
+              </div>
+              <div class="how-step">
+                <div class="how-step-num">2</div>
+                <div>
+                  <strong>Download the full source files</strong> <span class="optional-tag-sm">optional</span>
+                  <p>For each file changed in the PR, download the current version from GitHub:</p>
+                  <ul class="how-list">
+                    <li>Navigate to the file in the repo on GitHub.</li>
+                    <li>Click the <strong>Raw</strong> button.</li>
+                    <li>Save the page (<kbd>Ctrl+S</kbd> / <kbd>Cmd+S</kbd>).</li>
+                  </ul>
+                  <p class="how-note">Alternatively, clone the repo locally and upload the files directly from your machine. The more source files you upload, the more context Gemini has.</p>
+                  <div class="code-example">git clone https://github.com/owner/repo.git<br>cd repo &amp;&amp; git checkout &lt;pr-branch&gt;</div>
+                </div>
+              </div>
+              <div class="how-step">
+                <div class="how-step-num">3</div>
+                <div>
+                  <strong>Upload here</strong>
+                  <p>Upload the <code>.diff</code> file in slot&nbsp;<strong>①</strong> and any source files in slot&nbsp;<strong>②</strong>, then click <strong>RUN ANALYSIS</strong>.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <section class="card">
+          <h2 class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 0 0 4.93 19.07M4.93 4.93A10 10 0 0 1 19.07 19.07"/></svg>
+            Review Settings
+          </h2>
+
+          <label class="form-label">Review Focus</label>
+          <select class="form-select" id="review-focus">
+            <option value="general">General Review</option>
+            <option value="security">Security &amp; Vulnerabilities</option>
+            <option value="performance">Performance Optimization</option>
+            <option value="style">Code Style &amp; Readability</option>
+            <option value="bugs">Bug Detection</option>
+            <option value="tests">Test Coverage</option>
+          </select>
+
+          <label class="form-label" style="margin-top:14px;">Severity Threshold</label>
+          <select class="form-select" id="severity">
+            <option value="all">Show All Issues</option>
+            <option value="medium">Medium &amp; Above</option>
+            <option value="high">High &amp; Critical Only</option>
+          </select>
+
+          <label class="form-label" style="margin-top:14px;">Model</label>
+          <div class="model-badge">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            gemini-3-flash-preview
+          </div>
+
+          <label class="form-label" style="margin-top:14px;">Google AI Studio API Key</label>
+          <div class="api-key-wrapper">
+            <input type="password" class="form-input" id="api-key" placeholder="AIza..." />
+            <button class="btn-icon-inline" id="toggle-key" title="Show/hide key">
+              <svg id="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <p class="hint-text">Your key is never stored — used only in-session.</p>
+        </section>
+
+        <button class="btn btn-primary run-btn" id="run-btn" disabled>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          RUN ANALYSIS
+        </button>
+      </aside>
+
+      <!-- Right panel: Diff viewer + Results -->
+      <section class="right-panel">
+
+        <!-- Tabs -->
+        <div class="tab-bar">
+          <button class="tab active" data-tab="diff">Diff View</button>
+          <button class="tab" data-tab="review">AI Review</button>
+          <button class="tab" data-tab="summary">Summary</button>
+        </div>
+
+        <!-- Diff View -->
+        <div class="tab-content active" id="tab-diff">
+          <div class="empty-state" id="diff-empty">
+            <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            <p>Upload a PR file to view the diff</p>
+          </div>
+          <div class="diff-viewer" id="diff-viewer" style="display:none;"></div>
+        </div>
+
+        <!-- AI Review -->
+        <div class="tab-content" id="tab-review">
+          <div class="empty-state" id="review-empty">
+            <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <p>Run the analysis to see AI feedback</p>
+          </div>
+          <div id="review-loading" style="display:none;" class="loading-state">
+            <div class="spinner"></div>
+            <p>Gemini is reviewing your code…</p>
+          </div>
+          <div id="review-results" style="display:none;"></div>
+        </div>
+
+        <!-- Summary -->
+        <div class="tab-content" id="tab-summary">
+          <div class="empty-state" id="summary-empty">
+            <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            <p>Summary will appear after analysis</p>
+          </div>
+          <div id="summary-content" style="display:none;"></div>
+        </div>
+
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

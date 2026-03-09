@@ -1,0 +1,215 @@
+From 125e75f668cb436b87efa065e0b5e26b47bb883f Mon Sep 17 00:00:00 2001
+From: Oscar Laptop <oscka857@student.liu.se>
+Date: Tue, 14 Oct 2025 21:21:08 +0200
+Subject: [PATCH] Rover: Added AMP limiter
+
+---
+ libraries/AP_BattMonitor/AP_BattMonitor.h     | 10 ++-
+ .../AP_BattMonitor/AP_BattMonitor_Params.cpp  |  4 +-
+ libraries/AR_Motors/AP_MotorsUGV.cpp          | 68 ++++++++++++++++++-
+ libraries/AR_Motors/AP_MotorsUGV.h            | 11 +++
+ 4 files changed, 89 insertions(+), 4 deletions(-)
+
+diff --git a/libraries/AP_BattMonitor/AP_BattMonitor.h b/libraries/AP_BattMonitor/AP_BattMonitor.h
+index aeb602f56759d..4c410b0dce62f 100644
+--- a/libraries/AP_BattMonitor/AP_BattMonitor.h
++++ b/libraries/AP_BattMonitor/AP_BattMonitor.h
+@@ -208,6 +208,14 @@ class AP_BattMonitor
+     bool overpower_detected() const;
+     bool overpower_detected(uint8_t instance) const;
+ 
++#if AP_BATTERY_WATT_MAX_ENABLED
++    /// get_watt_max - returns maximum power in watts
++    float get_watt_max() const { return get_watt_max(AP_BATT_PRIMARY_INSTANCE); }
++    float get_watt_max(uint8_t instance) const {
++        return _params[instance]._watt_max;
++    }
++#endif // AP_BATTERY_WATT_MAX_ENABLED
++
+     // cell voltages in millivolts
+     bool has_cell_voltages() const { return has_cell_voltages(AP_BATT_PRIMARY_INSTANCE); }
+     bool has_cell_voltages(const uint8_t instance) const;
+@@ -216,7 +224,7 @@ class AP_BattMonitor
+ 
+     // get once cell voltage (for scripting)
+     bool get_cell_voltage(uint8_t instance, uint8_t cell, float &voltage) const;
+-
++    
+     // temperature
+     bool get_temperature(float &temperature) const { return get_temperature(temperature, AP_BATT_PRIMARY_INSTANCE); }
+     bool get_temperature(float &temperature, const uint8_t instance) const;
+diff --git a/libraries/AP_BattMonitor/AP_BattMonitor_Params.cpp b/libraries/AP_BattMonitor/AP_BattMonitor_Params.cpp
+index 9c9bb1a1c4347..821f60cd8eb0b 100644
+--- a/libraries/AP_BattMonitor/AP_BattMonitor_Params.cpp
++++ b/libraries/AP_BattMonitor/AP_BattMonitor_Params.cpp
+@@ -75,13 +75,13 @@ const AP_Param::GroupInfo AP_BattMonitor_Params::var_info[] = {
+     AP_GROUPINFO("CAPACITY", 7, AP_BattMonitor_Params, _pack_capacity, AP_BATT_MONITOR_BATTERY_CAPACITY),
+ 
+ #if AP_BATTERY_WATT_MAX_ENABLED
+-    // @Param{Plane}: WATT_MAX
++    // @Param{Plane,Rover}: WATT_MAX
+     // @DisplayName: Maximum allowed power (Watts)
+     // @Description: If battery wattage (voltage * current) exceeds this value then the system will reduce max throttle (THR_MAX, TKOFF_THR_MAX and THR_MIN for reverse thrust) to satisfy this limit. This helps limit high current to low C rated batteries regardless of battery voltage. The max throttle will slowly grow back to THR_MAX (or TKOFF_THR_MAX ) and THR_MIN if demanding the current max and under the watt max. Use 0 to disable.
+     // @Units: W
+     // @Increment: 1
+     // @User: Advanced
+-    AP_GROUPINFO_FRAME("WATT_MAX", 8, AP_BattMonitor_Params, _watt_max, 0, AP_PARAM_FRAME_PLANE),
++    AP_GROUPINFO_FRAME("WATT_MAX", 8, AP_BattMonitor_Params, _watt_max, 0, AP_PARAM_FRAME_PLANE | AP_PARAM_FRAME_ROVER),
+ #endif
+ 
+     // @Param: SERIAL_NUM
+diff --git a/libraries/AR_Motors/AP_MotorsUGV.cpp b/libraries/AR_Motors/AP_MotorsUGV.cpp
+index 4092811591f16..e6684df81c0a3 100644
+--- a/libraries/AR_Motors/AP_MotorsUGV.cpp
++++ b/libraries/AR_Motors/AP_MotorsUGV.cpp
+@@ -17,6 +17,8 @@
+ #include <GCS_MAVLink/GCS.h>
+ #include "AP_MotorsUGV.h"
+ #include <AP_Relay/AP_Relay.h>
++#include <AP_BattMonitor/AP_BattMonitor.h>
++#include <AP_Scheduler/AP_Scheduler.h>
+ 
+ #define SERVO_MAX 4500  // This value represents 45 degrees and is just an arbitrary representation of servo max travel.
+ 
+@@ -126,7 +128,17 @@ const AP_Param::GroupInfo AP_MotorsUGV::var_info[] = {
+     // @Increment: 0.1
+     // @User: Standard
+     AP_GROUPINFO("REV_DELAY", 15, AP_MotorsUGV, _reverse_delay, 0),
+-    
++
++#if AP_BATTERY_WATT_MAX_ENABLED
++    // @Param: BAT_WATT_TC
++    // @DisplayName: Battery power limiting time constant
++    // @Description: Time constant used to limit the smooth power throttling.
++    // @Range: 0 10
++    // @Units: s
++    // @User: Advanced
++    AP_GROUPINFO("BAT_WATT_TC", 16, AP_MotorsUGV, _batt_power_time_constant, 5.0f),
++#endif
++
+     AP_GROUPEND
+ };
+ 
+@@ -337,6 +349,11 @@ void AP_MotorsUGV::output(bool armed, float ground_speed, float dt)
+     // slew limit throttle
+     slew_limit_throttle(dt);
+ 
++    // apply power limiting to throttle
++#if AP_BATTERY_WATT_MAX_ENABLED
++    power_limit_throttle(dt);
++#endif
++
+     // output for regular steering/throttle style frames
+     output_regular(armed, ground_speed, _steering, _throttle);
+ 
+@@ -984,6 +1001,36 @@ void AP_MotorsUGV::output_omni(bool armed, float steering, float throttle, float
+     }
+ }
+ 
++// return power_limit as a number from 0 ~ 1 in the range throttle_min to throttle_max
++#if AP_BATTERY_WATT_MAX_ENABLED
++float AP_MotorsUGV::get_power_limit_max_throttle(float dt)
++{
++    AP_BattMonitor &battery = AP::battery();
++
++    float _batt_current;
++    const float watt_max = battery.get_watt_max();
++    const float _batt_voltage = battery.voltage();
++    
++    if (watt_max <= 0 ||  // return maximum if power limiting is disabled
++        !hal.util->get_soft_armed() ||   // remove throttle limit if disarmed
++        !battery.current_amps(_batt_current) || // no current monitoring is available
++        is_zero(_batt_voltage)) {  // no voltage monitoring is available
++        _throttle_limit = 1.0f;
++        return 1.0f;
++    }
++
++    const float power = _batt_voltage * _batt_current;
++    const float power_ratio = power / watt_max;
++
++    _throttle_limit += (dt / (dt + _batt_power_time_constant)) * (1.0f - power_ratio);
++
++    // throttle limit drops to 5% minimum when over power limit
++    _throttle_limit = constrain_float(_throttle_limit, _throttle_min, _throttle_max);
++
++    return _throttle_limit;
++}
++#endif
++
+ // output throttle value to main throttle channel, left throttle or right throttle.  throttle should be scaled from -100 to 100
+ void AP_MotorsUGV::output_throttle(SRV_Channel::Function function, float throttle, float dt)
+ {
+@@ -1098,6 +1145,25 @@ void AP_MotorsUGV::slew_limit_throttle(float dt)
+     _throttle_prev = _throttle;
+ }
+ 
++// apply power limiting to throttle for one iteration
++#if AP_BATTERY_WATT_MAX_ENABLED
++void AP_MotorsUGV::power_limit_throttle(float dt)
++{
++    const float power_limit_max = get_power_limit_max_throttle(dt);
++    
++    const float throttle_max = 100.0f * power_limit_max;
++    const float throttle_min = -100.0f * power_limit_max;
++    
++    if (_throttle > throttle_max) {
++        _throttle = throttle_max;
++        limit.throttle_upper = true;
++    } else if (_throttle < throttle_min) {
++        _throttle = throttle_min;
++        limit.throttle_lower = true;
++    }
++}
++#endif
++
+ // set limits based on steering and throttle input
+ void AP_MotorsUGV::set_limits_from_input(bool armed, float steering, float throttle)
+ {
+diff --git a/libraries/AR_Motors/AP_MotorsUGV.h b/libraries/AR_Motors/AP_MotorsUGV.h
+index ca795d9ed91ef..3b0ce20a6e2aa 100644
+--- a/libraries/AR_Motors/AP_MotorsUGV.h
++++ b/libraries/AR_Motors/AP_MotorsUGV.h
+@@ -3,6 +3,7 @@
+ #include <AP_Arming/AP_Arming.h>
+ #include <AP_WheelEncoder/AP_WheelRateControl.h>
+ #include <SRV_Channel/SRV_Channel.h>
++#include <AP_BattMonitor/AP_BattMonitor_config.h>
+ 
+ class AP_MotorsUGV {
+ public:
+@@ -183,6 +184,11 @@ class AP_MotorsUGV {
+     // slew limit throttle for one iteration
+     void slew_limit_throttle(float dt);
+ 
++    // apply power limiting to throttle for one iteration
++#if AP_BATTERY_WATT_MAX_ENABLED
++    void power_limit_throttle(float dt);
++#endif
++
+     // set limits based on steering and throttle input
+     void set_limits_from_input(bool armed, float steering, float throttle);
+ 
+@@ -192,6 +198,9 @@ class AP_MotorsUGV {
+     // use rate controller to achieve desired throttle
+     float get_rate_controlled_throttle(SRV_Channel::Function function, float throttle, float dt);
+ 
++    // return power_limit as a number from 0 ~ 1 in the range throttle_min to throttle_max
++    float get_power_limit_max_throttle(float dt);
++
+     // external references
+     AP_WheelRateControl &_rate_controller;
+ 
+@@ -210,11 +219,13 @@ class AP_MotorsUGV {
+     AP_Float _speed_scale_base;  // speed above which steering is scaled down when using regular steering/throttle vehicles.  zero to disable speed scaling
+     AP_Float _steering_throttle_mix; // Steering vs Throttle priorisation.  Higher numbers prioritise steering, lower numbers prioritise throttle.  Only valid for Skid Steering vehicles
+     AP_Float _reverse_delay; // delay in seconds when reversing motor
++    AP_Float _batt_power_time_constant;    // Time constant used to limit the battery power
+ 
+     // internal variables
+     float   _steering;  // requested steering as a value from -4500 to +4500
+     float   _throttle;  // requested throttle as a value from -100 to 100
+     float   _throttle_prev; // throttle input from previous iteration
++    float   _throttle_limit = 1.0f;  // used for current limiting
+     bool    _scale_steering = true; // true if we should scale steering by speed or angle
+     float   _lateral;  // requested lateral input as a value from -100 to +100
+     float   _roll;      // requested roll as a value from -1 to +1
