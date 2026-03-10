@@ -115,7 +115,7 @@
 
           <label class="form-label">Review Focus</label>
           <select class="form-select" id="review-focus">
-            <option value="general">General Review</option>
+            <option value="general">Standard Review</option>
             <option value="security">Security &amp; Vulnerabilities</option>
             <option value="performance">Performance Optimization</option>
             <option value="style">Code Style &amp; Readability</option>
@@ -131,10 +131,10 @@
           </select>
 
           <label class="form-label" style="margin-top:14px;">Model</label>
-          <div class="model-badge">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            gemini-3-flash-preview
-          </div>
+          <select class="form-select" id="model">
+            <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+            <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite Preview</option>
+          </select>
 
           <label class="form-label" style="margin-top:14px;">Google AI Studio API Key</label>
           <div class="api-key-wrapper">
@@ -158,7 +158,8 @@
         <!-- Tabs -->
         <div class="tab-bar">
           <button class="tab active" data-tab="diff">Diff View</button>
-          <button class="tab" data-tab="review">AI Review</button>
+          <button class="tab" data-tab="review">Standard Review</button>
+          <button class="tab" data-tab="discussion">Discussion</button>
           <button class="tab" data-tab="summary">Summary</button>
         </div>
 
@@ -175,13 +176,22 @@
         <div class="tab-content" id="tab-review">
           <div class="empty-state" id="review-empty">
             <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-            <p>Run the analysis to see AI feedback</p>
+            <p>Run the analysis to see the standard review</p>
           </div>
           <div id="review-loading" style="display:none;" class="loading-state">
             <div class="spinner"></div>
             <p>Gemini is reviewing your code…</p>
           </div>
           <div id="review-results" style="display:none;"></div>
+        </div>
+
+        <!-- Discussion -->
+        <div class="tab-content" id="tab-discussion">
+          <div class="empty-state" id="discussion-empty">
+            <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <p>Run the analysis to see discussion questions on the diff</p>
+          </div>
+          <div id="discussion-content" style="display:none;"></div>
         </div>
 
         <!-- Summary -->
