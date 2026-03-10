@@ -22,7 +22,6 @@
   const apiKeyInput  = document.getElementById('api-key');
   const toggleKey    = document.getElementById('toggle-key');
   const focusSelect  = document.getElementById('review-focus');
-  const severitySelect = document.getElementById('severity');
 
   const diffEmpty    = document.getElementById('diff-empty');
   const diffViewer   = document.getElementById('diff-viewer');
@@ -286,7 +285,6 @@
     if (!apiKey || !diffText) return;
 
     const focus    = focusSelect.options[focusSelect.selectedIndex].text;
-    const severity = severitySelect.value;
 
     // Reset UI
     reviewResults.style.display = 'none';
@@ -299,7 +297,7 @@
     runBtn.innerHTML = `<div class="spinner" style="width:16px;height:16px;border-width:2px;"></div> Analysing…`;
 
     try {
-      const response = await callGemini(apiKey, focus, severity, diffText, repoFiles);
+      const response = await callGemini(apiKey, focus, diffText, repoFiles);
       const parsed   = parseGeminiResponse(response);
       reviewData     = parsed;
       renderReview(parsed);
@@ -319,12 +317,12 @@
   // by the Gemini 3 developer guide — setting it lower can degrade performance.
   const GEMINI_MODEL = 'gemini-3-flash-preview';
 
-  async function callGemini (apiKey, focus, severity, diff, fullFiles = {}) {
+  async function callGemini (apiKey, focus, diff, fullFiles = {}) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
     const truncated = diff.length > 30000 ? diff.slice(0, 30000) + '\n\n[... diff truncated for length ...]' : diff;
 
-    const prompt = buildPrompt(focus, severity, truncated, fullFiles);
+    const prompt = buildPrompt(focus, truncated, fullFiles);
 
     const body = {
       contents: [{
@@ -353,7 +351,7 @@
     return text;
   }
 
-  function buildPrompt (focus, severity, diff, fullFiles = {}) {
+  function buildPrompt (focus, diff, fullFiles = {}) {
     const fileNames  = Object.keys(fullFiles);
     const hasContext = fileNames.length > 0;
 
@@ -375,38 +373,41 @@
     return `You are an expert senior software engineer performing a thorough code review of a GitHub Pull Request.
 
 REVIEW FOCUS: ${focus}
-SEVERITY FILTER: ${severity === 'all' ? 'Report all issues' : severity === 'medium' ? 'Report Medium, High and Critical issues only' : 'Report High and Critical issues only'}
 
 ${contextNote}${fileSection}
 Analyse the diff carefully and respond with a JSON object ONLY (no markdown fences, no extra text) in this exact structure:
 
 {
   "verdict": "APPROVE" | "REQUEST_CHANGES" | "REJECT",
-  "summary": "A concise 2-4 sentence overall assessment of the PR.",
-  "stats": {
-    "files_changed": <number>,
-    "lines_added": <number>,
-    "lines_removed": <number>,
-    "critical": <number>,
-    "high": <number>,
-    "medium": <number>,
-    "low": <number>,
-    "info": <number>
-  },
-  "issues": [
+  "summary_bullets": [
+    { "text": "One bullet point describing a key change or aspect of the PR", "important": true }
+  ],
+  "concrete_issues": [
     {
-      "severity": "critical" | "high" | "medium" | "low" | "info",
-      "title": "Short title of the issue",
+      "title": "Short title of the specific issue",
       "file": "path/to/file.ext or empty string",
-      "description": "Detailed description. Prefix with [Limited context] if you cannot fully assess due to missing surrounding code.",
+      "description": "Clear description of the concrete problem (e.g. poor naming, race condition, null pointer, missing validation). Prefix with [Limited context] if you cannot fully assess due to missing surrounding code.",
       "suggestion": "Concrete suggestion or corrected code (optional)"
     }
   ],
-  "positives": ["Positive aspects of the PR"]
+  "discussion_questions": [
+    {
+      "title": "Discussion topic",
+      "description": "An open-ended question or less concrete concern worth discussing (e.g. architectural trade-offs, design decisions, potential future issues)"
+    }
+  ],
+  "stats": {
+    "files_changed": <number>,
+    "lines_added": <number>,
+    "lines_removed": <number>
+  }
 }
 
-Count actual lines added (+) and removed (-) from the diff for stats.
-Be specific and actionable. If no issues exist at a severity level, set that count to 0.
+Guidelines:
+- summary_bullets: 3-7 bullet points summarising what the PR does. Set "important": true for the 1-3 most critical points (significant logic changes, security impacts, breaking changes). Set "important": false for minor details.
+- concrete_issues: Specific, actionable problems that should be fixed — e.g. poor variable naming, race conditions, missing error handling, hardcoded values, null dereferences. Each issue must be clear enough to act on immediately.
+- discussion_questions: Softer, open-ended concerns — e.g. architectural choices, test coverage strategy, naming conventions at a higher level, potential future maintainability. Phrase these as questions to invite discussion rather than mandating a fix.
+- Count actual lines added (+) and removed (-) from the diff for stats.
 
 DIFF:
 ${diff}`;
@@ -420,13 +421,13 @@ ${diff}`;
     try {
       return JSON.parse(clean);
     } catch {
-      // Fallback: wrap raw text as an info issue
+      // Fallback: wrap raw text as a concrete issue
       return {
         verdict: 'REQUEST_CHANGES',
-        summary: 'The AI returned a response that could not be parsed as structured JSON. The raw response is shown below.',
-        stats: { files_changed: 0, lines_added: 0, lines_removed: 0, critical: 0, high: 0, medium: 0, low: 0, info: 1 },
-        issues: [{ severity: 'info', title: 'Raw Gemini Response', file: '', description: text, suggestion: '' }],
-        positives: []
+        summary_bullets: [{ text: 'The AI returned a response that could not be parsed as structured JSON. The raw response is shown below.', important: true }],
+        concrete_issues: [{ title: 'Raw Gemini Response', file: '', description: text, suggestion: '' }],
+        discussion_questions: [],
+        stats: { files_changed: 0, lines_added: 0, lines_removed: 0 }
       };
     }
   }
@@ -436,25 +437,6 @@ ${diff}`;
     reviewLoading.style.display = 'none';
     reviewResults.innerHTML = '';
 
-    if (!data.issues || data.issues.length === 0) {
-      reviewResults.innerHTML = `
-        <div class="empty-state">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-          <p style="color:var(--green);font-weight:600;">No issues found!</p>
-          <p style="color:var(--text-muted);">Gemini found no problems matching your criteria.</p>
-        </div>`;
-      reviewResults.style.display = 'flex';
-      return;
-    }
-
-    const filterSev = severitySelect.value;
-    const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-    const sorted = [...data.issues].sort((a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5));
-
-    const filtered = filterSev === 'all' ? sorted
-      : filterSev === 'medium' ? sorted.filter(i => ['critical','high','medium'].includes(i.severity))
-      : sorted.filter(i => ['critical','high'].includes(i.severity));
-
     const hasCtx = Object.keys(repoFiles).length > 0;
     const banner = document.createElement('div');
     banner.className = hasCtx ? 'ctx-banner ctx-banner-full' : 'ctx-banner ctx-banner-partial';
@@ -463,28 +445,71 @@ ${diff}`;
       : '⚠ Diff-only context — issues marked [Limited context] may need manual verification. Upload source files for a deeper review.';
     reviewResults.appendChild(banner);
 
-    const title = document.createElement('p');
-    title.className = 'review-section-title';
-    title.textContent = `${filtered.length} issue${filtered.length !== 1 ? 's' : ''} found`;
-    reviewResults.appendChild(title);
+    // ── Section 1: Summary of Changes ───────────────────
+    const summaryTitle = document.createElement('p');
+    summaryTitle.className = 'review-section-title';
+    summaryTitle.textContent = 'Summary of Changes';
+    reviewResults.appendChild(summaryTitle);
 
-    for (const issue of filtered) {
-      reviewResults.appendChild(buildIssueCard(issue));
+    const bullets = data.summary_bullets || [];
+    if (bullets.length > 0) {
+      const bulletList = document.createElement('ul');
+      bulletList.className = 'summary-bullet-list';
+      for (const bullet of bullets) {
+        const li = document.createElement('li');
+        const isImportant = bullet.important === true;
+        li.className = 'summary-bullet' + (isImportant ? ' summary-bullet-important' : '');
+        const icon = document.createElement('span');
+        icon.className = isImportant ? 'bullet-star' : 'bullet-dot';
+        icon.textContent = isImportant ? '★' : '•';
+        li.appendChild(icon);
+        li.appendChild(document.createTextNode(bullet.text || bullet));
+        bulletList.appendChild(li);
+      }
+      reviewResults.appendChild(bulletList);
+    } else {
+      const noSummary = document.createElement('p');
+      noSummary.style.cssText = 'font-size:13px;color:var(--text-muted);padding:4px 0;';
+      noSummary.textContent = 'No summary available.';
+      reviewResults.appendChild(noSummary);
     }
 
-    if (data.positives && data.positives.length > 0) {
-      const posTitle = document.createElement('p');
-      posTitle.className = 'review-section-title';
-      posTitle.style.marginTop = '24px';
-      posTitle.textContent = 'Positive Aspects';
-      reviewResults.appendChild(posTitle);
+    // ── Section 2: Concrete Issues ───────────────────────
+    const issues = data.concrete_issues || [];
+    const issuesTitle = document.createElement('p');
+    issuesTitle.className = 'review-section-title';
+    issuesTitle.style.marginTop = '24px';
+    issuesTitle.textContent = `Concrete Issues (${issues.length})`;
+    reviewResults.appendChild(issuesTitle);
 
-      const posCard = document.createElement('div');
-      posCard.style.cssText = 'background:var(--bg-card2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;';
-      posCard.innerHTML = '<ul style="list-style:none;display:flex;flex-direction:column;gap:6px;">' +
-        data.positives.map(p => `<li style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--text-muted);"><span style="color:var(--green);margin-top:1px;">✓</span>${escHtml(p)}</li>`).join('') +
-        '</ul>';
-      reviewResults.appendChild(posCard);
+    if (issues.length === 0) {
+      const noIssues = document.createElement('div');
+      noIssues.style.cssText = 'font-size:13px;color:var(--text-muted);padding:4px 0;';
+      noIssues.textContent = 'No concrete issues found.';
+      reviewResults.appendChild(noIssues);
+    } else {
+      for (const issue of issues) {
+        reviewResults.appendChild(buildIssueCard(issue));
+      }
+    }
+
+    // ── Section 3: Discussion Questions ─────────────────
+    const questions = data.discussion_questions || [];
+    const discussionTitle = document.createElement('p');
+    discussionTitle.className = 'review-section-title';
+    discussionTitle.style.marginTop = '24px';
+    discussionTitle.textContent = `Discussion Questions (${questions.length})`;
+    reviewResults.appendChild(discussionTitle);
+
+    if (questions.length === 0) {
+      const noQuestions = document.createElement('div');
+      noQuestions.style.cssText = 'font-size:13px;color:var(--text-muted);padding:4px 0;';
+      noQuestions.textContent = 'No discussion points raised.';
+      reviewResults.appendChild(noQuestions);
+    } else {
+      for (const q of questions) {
+        reviewResults.appendChild(buildDiscussionCard(q));
+      }
     }
 
     reviewResults.style.display = 'block';
@@ -494,14 +519,13 @@ ${diff}`;
     const card = document.createElement('div');
     card.className = 'review-issue';
 
-    const sev = (issue.severity || 'info').toLowerCase();
     const desc = escHtml(issue.description || '').replace(
       /\[Limited context\]/g,
       '<span class="limited-ctx-tag">[Limited context]</span>'
     );
     card.innerHTML = `
       <div class="review-issue-header">
-        <span class="severity-badge severity-${sev}">${sev}</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
         <div style="flex:1;min-width:0;">
           <div class="issue-title">${escHtml(issue.title || 'Issue')}</div>
           ${issue.file ? `<div class="issue-file">${escHtml(issue.file)}</div>` : ''}
@@ -510,6 +534,20 @@ ${diff}`;
       <div class="review-issue-body">
         <p>${desc}</p>
         ${issue.suggestion ? `<p class="review-section-title" style="margin-top:10px;">Suggestion</p><pre>${escHtml(issue.suggestion)}</pre>` : ''}
+      </div>`;
+    return card;
+  }
+
+  function buildDiscussionCard (question) {
+    const card = document.createElement('div');
+    card.className = 'discussion-card';
+    card.innerHTML = `
+      <div class="discussion-card-header">
+        <span class="discussion-icon">?</span>
+        <div class="issue-title">${escHtml(question.title || 'Discussion')}</div>
+      </div>
+      <div class="review-issue-body">
+        <p>${escHtml(question.description || '')}</p>
       </div>`;
     return card;
   }
@@ -523,32 +561,21 @@ ${diff}`;
     const verdict = (data.verdict || 'REQUEST_CHANGES').toUpperCase();
     const verdictClass = verdict === 'APPROVE' ? 'verdict-approve' : verdict === 'REJECT' ? 'verdict-reject' : 'verdict-changes';
     const verdictIcon = verdict === 'APPROVE' ? '✓' : verdict === 'REJECT' ? '✕' : '~';
+    const concreteCount = (data.concrete_issues || []).length;
+    const discussionCount = (data.discussion_questions || []).length;
 
     summaryContent.innerHTML = `
       <div class="summary-overview">
         <h3>
           <span class="verdict-badge ${verdictClass}">${verdictIcon} ${verdict.replace('_', ' ')}</span>
         </h3>
-        <p>${escHtml(data.summary || '')}</p>
-      </div>
-
-      <p class="review-section-title">Issue Breakdown</p>
-      <div class="summary-grid">
-        <div class="stat-card stat-critical">
-          <div class="stat-value">${stats.critical ?? 0}</div>
-          <div class="stat-label">Critical</div>
-        </div>
-        <div class="stat-card stat-high">
-          <div class="stat-value">${stats.high ?? 0}</div>
-          <div class="stat-label">High</div>
-        </div>
-        <div class="stat-card stat-medium">
-          <div class="stat-value">${stats.medium ?? 0}</div>
-          <div class="stat-label">Medium</div>
-        </div>
-        <div class="stat-card stat-low">
-          <div class="stat-value">${stats.low ?? 0}</div>
-          <div class="stat-label">Low / Info</div>
+        <div style="display:flex;gap:20px;margin-top:10px;flex-wrap:wrap;">
+          <span style="font-size:13px;color:var(--text-muted);">
+            <strong style="color:var(--red);">${concreteCount}</strong> concrete issue${concreteCount !== 1 ? 's' : ''}
+          </span>
+          <span style="font-size:13px;color:var(--text-muted);">
+            <strong style="color:var(--accent);">${discussionCount}</strong> discussion point${discussionCount !== 1 ? 's' : ''}
+          </span>
         </div>
       </div>
 
