@@ -11,6 +11,7 @@
   let diffText        = '';
   let reviewData      = null;
   let parsedDiffFiles = [];
+  let commentStatuses = {};
   let repoFiles       = {}; // { 'filename.js': 'full source string' }
 
   /* ── DOM refs ───────────────────────────────────────── */
@@ -134,9 +135,7 @@
   apiKeyInput.addEventListener('input', updateRunBtn);
   severitySelect.addEventListener('change', () => {
     if (!reviewData || !diffText) return;
-    renderDiff(diffText, { preserveTab: true });
-    renderReview(reviewData);
-    renderDiscussion(reviewData);
+    rerenderAnalysisViews();
   });
 
   function updateRunBtn () {
@@ -149,6 +148,7 @@
     reader.onload = e => {
       diffText = e.target.result;
       reviewData = null;
+      commentStatuses = {};
       fileName.textContent = file.name;
       fileInfo.style.display = 'block';
       resetAnalysisViews();
@@ -162,6 +162,7 @@
     diffText        = '';
     reviewData      = null;
     parsedDiffFiles = [];
+    commentStatuses = {};
     repoFiles       = {};
     fileInput.value    = '';
     srcFileInput.value = '';
@@ -201,6 +202,17 @@
     if (!options.preserveTab) {
       activateTab('diff');
     }
+  }
+
+  function rerenderAnalysisViews () {
+    if (!reviewData) return;
+
+    const activeTab = document.querySelector('.tab.active')?.dataset.tab || 'review';
+    renderDiff(diffText, { preserveTab: true });
+    renderDiscussion(reviewData);
+    renderReview(reviewData);
+    renderSummary(reviewData);
+    activateTab(activeTab);
   }
 
   function parseDiff (raw) {
@@ -436,8 +448,9 @@
     try {
       const response = await callGemini(apiKey, model, focus, severity, diffText, repoFiles);
       const parsed   = normalizeReviewData(parseGeminiResponse(response));
+      commentStatuses = {};
       reviewData     = parsed;
-      renderDiff(diffText);
+      renderDiff(diffText, { preserveTab: true });
       renderDiscussion(parsed);
       renderReview(parsed);
       renderSummary(parsed);
@@ -466,7 +479,7 @@
         parts: [{ text: prompt }]
       }],
       generationConfig: {
-        maxOutputTokens: 8192
+        maxOutputTokens: 16384 // 8192
       }
     };
 
@@ -596,7 +609,7 @@ ${diff}`;
     reviewResults.innerHTML = '';
 
     const filtered = getFilteredIssues(data.issues || []);
-    const questions = data.discussion_questions || [];
+    const questions = getVisibleDiscussionQuestions(data.discussion_questions || []);
 
     const hasCtx = Object.keys(repoFiles).length > 0;
     const banner = document.createElement('div');
@@ -658,6 +671,7 @@ ${diff}`;
   function renderDiscussion (data) {
     discussionEmpty.style.display = 'none';
     discussionContent.innerHTML = '';
+    const visibleQuestions = getVisibleDiscussionQuestions(data.discussion_questions || []);
 
     if (parsedDiffFiles.length === 0 && diffText) {
       parsedDiffFiles = parseDiff(diffText);
@@ -669,7 +683,7 @@ ${diff}`;
       pre.textContent = diffText;
       discussionContent.appendChild(pre);
     } else {
-      discussionContent.appendChild(buildAnnotatedDiffLayout(parsedDiffFiles, data.discussion_questions || [], {
+      discussionContent.appendChild(buildAnnotatedDiffLayout(parsedDiffFiles, visibleQuestions, {
         kind: 'discussion',
         title: 'Discussion Questions',
         emptyMessage: 'No discussion questions were raised for the human review.'
@@ -700,6 +714,7 @@ ${diff}`;
         <p>${desc}</p>
         ${issue.suggestion ? `<p class="review-section-title" style="margin-top:10px;">Suggestion</p><pre>${escHtml(issue.suggestion)}</pre>` : ''}
       </div>`;
+    card.querySelector('.review-issue-body')?.appendChild(buildCommentActionBar(issue));
     return card;
   }
 
@@ -735,8 +750,11 @@ ${diff}`;
           ${formatLocation(item) ? `<div class="issue-file">${escHtml(formatLocation(item))}</div>` : ''}
         </div>
       </div>
-      ${item.context ? `<div class="discussion-body"><p>${renderInlineMarkup(item.context)}</p></div>` : ''}
+      <div class="discussion-body">
+        ${item.context ? `<p>${renderInlineMarkup(item.context)}</p>` : ''}
+      </div>
     `;
+    card.querySelector('.discussion-body')?.appendChild(buildCommentActionBar(item));
     return card;
   }
 
@@ -756,7 +774,7 @@ ${diff}`;
     const verdict = (data.verdict || 'REQUEST_CHANGES').toUpperCase();
     const verdictClass = verdict === 'APPROVE' ? 'verdict-approve' : verdict === 'REJECT' ? 'verdict-reject' : 'verdict-changes';
     const lowAndInfoCount = (stats.low ?? 0) + (stats.info ?? 0);
-    const discussionCount = (data.discussion_questions || []).length;
+    const discussionCount = getVisibleDiscussionQuestions(data.discussion_questions || []).length;
     const verdictIcon = verdict === 'APPROVE' ? '✓' : verdict === 'REJECT' ? '✕' : '~';
 
     summaryContent.innerHTML = `
@@ -940,6 +958,7 @@ ${diff}`;
         </div>
         ${annotation.context ? `<p class="diff-annotation-copy">${renderInlineMarkup(annotation.context)}</p>` : ''}
       `;
+      card.appendChild(buildCommentActionBar(annotation));
       return card;
     }
 
@@ -956,7 +975,35 @@ ${diff}`;
       <p class="diff-annotation-copy">${desc}</p>
       ${annotation.suggestion ? `<pre>${escHtml(annotation.suggestion)}</pre>` : ''}
     `;
+    card.appendChild(buildCommentActionBar(annotation));
     return card;
+  }
+
+  function buildCommentActionBar (item) {
+    const actions = document.createElement('div');
+    actions.className = 'comment-actions';
+
+    const ignoredButton = document.createElement('button');
+    ignoredButton.type = 'button';
+    ignoredButton.className = 'comment-action-btn comment-action-btn-ignored';
+    ignoredButton.textContent = 'Ignored';
+    ignoredButton.addEventListener('click', () => setCommentStatus(item.id, 'ignored'));
+
+    const fixedButton = document.createElement('button');
+    fixedButton.type = 'button';
+    fixedButton.className = 'comment-action-btn comment-action-btn-fixed';
+    fixedButton.textContent = 'Fixed';
+    fixedButton.addEventListener('click', () => setCommentStatus(item.id, 'fixed'));
+
+    actions.appendChild(ignoredButton);
+    actions.appendChild(fixedButton);
+    return actions;
+  }
+
+  function setCommentStatus (commentId, status) {
+    if (!commentId) return;
+    commentStatuses[commentId] = status;
+    rerenderAnalysisViews();
   }
 
   function resolveAnnotationPlacements (files, items, kind) {
@@ -980,7 +1027,7 @@ ${diff}`;
         side,
         kind,
         navIndex: index + 1,
-        id: `${kind}-anchor-${index + 1}`,
+        id: item.id || `${kind}-anchor-${index + 1}`,
         targetType
       };
     });
@@ -1107,7 +1154,8 @@ ${diff}`;
       ? review.summary_bullets.map(item => String(item || '').trim()).filter(Boolean)
       : [];
     const issues = Array.isArray(review.issues)
-      ? review.issues.map(item => ({
+      ? review.issues.map((item, index) => ({
+        id: item?.id || `issue-${index + 1}`,
         severity: String(item?.severity || 'info').toLowerCase(),
         title: item?.title || 'Issue',
         file: item?.file || '',
@@ -1118,7 +1166,7 @@ ${diff}`;
       }))
       : [];
     const discussionQuestions = Array.isArray(review.discussion_questions)
-      ? review.discussion_questions.map(normalizeDiscussionQuestion).filter(item => item.question)
+      ? review.discussion_questions.map((item, index) => normalizeDiscussionQuestion(item, index)).filter(item => item.question)
       : [];
 
     return {
@@ -1132,12 +1180,13 @@ ${diff}`;
     };
   }
 
-  function normalizeDiscussionQuestion (item) {
+  function normalizeDiscussionQuestion (item, index = 0) {
     if (typeof item === 'string') {
-      return { question: item, file: '', line: null, side: 'new', context: '' };
+      return { id: `discussion-${index + 1}`, question: item, file: '', line: null, side: 'new', context: '' };
     }
 
     return {
+      id: item?.id || `discussion-${index + 1}`,
       question: item?.question || '',
       file: item?.file || '',
       line: normalizeLineNumber(item?.line),
@@ -1149,11 +1198,21 @@ ${diff}`;
   function getFilteredIssues (issues) {
     const filterSev = severitySelect.value;
     const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-    const sorted = [...issues].sort((a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5));
+    const sorted = [...issues]
+      .filter(item => !isCommentHidden(item))
+      .sort((a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5));
 
     return filterSev === 'all' ? sorted
       : filterSev === 'medium' ? sorted.filter(i => ['critical', 'high', 'medium'].includes(i.severity))
       : sorted.filter(i => ['critical', 'high'].includes(i.severity));
+  }
+
+  function getVisibleDiscussionQuestions (questions) {
+    return (questions || []).filter(item => !isCommentHidden(item));
+  }
+
+  function isCommentHidden (item) {
+    return Boolean(item?.id && commentStatuses[item.id]);
   }
 
   function renderSummaryBulletsHtml (bullets) {

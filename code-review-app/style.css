@@ -596,6 +596,7 @@ kbd {
 .diff-line {
   display: flex;
   padding: 1px 0;
+  align-items: flex-start;
 }
 .diff-line:hover { background: rgba(255,255,255,0.03); }
 .diff-line-num {
@@ -607,7 +608,14 @@ kbd {
   font-size: 11px;
   border-right: 1px solid var(--border-light);
 }
-.diff-line-code { padding: 0 10px; white-space: pre; flex: 1; overflow-x: auto; }
+.diff-line-code {
+  padding: 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  flex: 1;
+  min-width: 0;
+}
 .diff-line.added { background: var(--green-bg); }
 .diff-line.added .diff-line-num { color: var(--green); }
 .diff-line.added .diff-line-code { color: var(--green); }
@@ -761,7 +769,7 @@ kbd {
 .diff-line-marker {
   min-width: 24px;
   height: 20px;
-  margin: auto 10px auto 0;
+  margin: 0 10px 0 0;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
@@ -825,6 +833,42 @@ kbd {
   color: var(--text);
   overflow-x: auto;
   white-space: pre-wrap;
+}
+
+.comment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.comment-action-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.03);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.comment-action-btn:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.05);
+}
+
+.comment-action-btn-ignored:hover {
+  border-color: rgba(210,153,34,0.35);
+  color: var(--yellow);
+}
+
+.comment-action-btn-fixed:hover {
+  border-color: rgba(63,185,80,0.35);
+  color: var(--green);
 }
 
 .annotation-current {
