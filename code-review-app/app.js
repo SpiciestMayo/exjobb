@@ -24,8 +24,6 @@
   const apiKeyInput  = document.getElementById('api-key');
   const toggleKey    = document.getElementById('toggle-key');
   const modelSelect  = document.getElementById('model');
-  const focusSelect  = document.getElementById('review-focus');
-  const severitySelect = document.getElementById('severity');
 
   const diffEmpty    = document.getElementById('diff-empty');
   const diffViewer   = document.getElementById('diff-viewer');
@@ -133,10 +131,6 @@
 
   /* Enable run button when file + API key are present */
   apiKeyInput.addEventListener('input', updateRunBtn);
-  severitySelect.addEventListener('change', () => {
-    if (!reviewData || !diffText) return;
-    rerenderAnalysisViews();
-  });
 
   function updateRunBtn () {
     runBtn.disabled = !(diffText && apiKeyInput.value.trim());
@@ -187,10 +181,10 @@
       pre.textContent = raw;
       diffViewer.appendChild(pre);
     } else if (reviewData) {
-      diffViewer.appendChild(buildAnnotatedDiffLayout(parsedDiffFiles, getFilteredIssues(reviewData.issues || []), {
+      diffViewer.appendChild(buildAnnotatedDiffLayout(parsedDiffFiles, getVisibleIssues(reviewData.issues || []), {
         kind: 'issue',
         title: 'Concrete Issues',
-        emptyMessage: 'No concrete issues matched the current severity threshold.'
+        emptyMessage: 'No concrete issues were found.'
       }));
     } else {
       parsedDiffFiles.forEach(file => diffViewer.appendChild(buildFileBlock(file)));
@@ -429,9 +423,7 @@
     const apiKey = apiKeyInput.value.trim();
     if (!apiKey || !diffText) return;
 
-    const model    = modelSelect.value;
-    const focus    = focusSelect.options[focusSelect.selectedIndex].text;
-    const severity = severitySelect.value;
+    const model = modelSelect.value;
 
     // Reset UI
     reviewResults.style.display = 'none';
@@ -446,7 +438,7 @@
     runBtn.innerHTML = `<div class="spinner" style="width:16px;height:16px;border-width:2px;"></div> Analysing…`;
 
     try {
-      const response = await callGemini(apiKey, model, focus, severity, diffText, repoFiles);
+      const response = await callGemini(apiKey, model, diffText, repoFiles);
       const parsed   = normalizeReviewData(parseGeminiResponse(response));
       commentStatuses = {};
       reviewData     = parsed;
@@ -467,12 +459,12 @@
   // The model is selected in the UI.
   // Temperature is intentionally left at the model default (1.0) as recommended
   // by the Gemini 3 developer guide — setting it lower can degrade performance.
-  async function callGemini (apiKey, model, focus, severity, diff, fullFiles = {}) {
+  async function callGemini (apiKey, model, diff, fullFiles = {}) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     const truncated = diff.length > 30000 ? diff.slice(0, 30000) + '\n\n[... diff truncated for length ...]' : diff;
 
-    const prompt = buildPrompt(focus, severity, truncated, fullFiles);
+    const prompt = buildPrompt(truncated, fullFiles);
 
     const body = {
       contents: [{
@@ -501,7 +493,7 @@
     return text;
   }
 
-  function buildPrompt (focus, severity, diff, fullFiles = {}) {
+  function buildPrompt (diff, fullFiles = {}) {
     const fileNames  = Object.keys(fullFiles);
     const hasContext = fileNames.length > 0;
 
@@ -522,8 +514,6 @@
 
     return `You are an expert senior software engineer performing a thorough code review of a GitHub Pull Request.
 
-REVIEW FOCUS: ${focus}
-SEVERITY FILTER: ${severity === 'all' ? 'Report all issues' : severity === 'medium' ? 'Report Medium, High and Critical issues only' : 'Report High and Critical issues only'}
 
 ${contextNote}${fileSection}
 Analyse the diff carefully and respond with a JSON object ONLY (no markdown fences, no extra text) in this exact structure:
@@ -608,7 +598,7 @@ ${diff}`;
     reviewLoading.style.display = 'none';
     reviewResults.innerHTML = '';
 
-    const filtered = getFilteredIssues(data.issues || []);
+    const filtered = getVisibleIssues(data.issues || []);
     const questions = getVisibleDiscussionQuestions(data.discussion_questions || []);
 
     const hasCtx = Object.keys(repoFiles).length > 0;
@@ -630,7 +620,7 @@ ${diff}`;
     reviewResults.appendChild(issuesTitle);
 
     if (filtered.length === 0) {
-      reviewResults.appendChild(buildEmptySectionCard('No concrete issues matched the current severity threshold.'));
+      reviewResults.appendChild(buildEmptySectionCard('No concrete issues were found.'));
     } else {
       for (const issue of filtered) {
         reviewResults.appendChild(buildIssueCard(issue));
@@ -1195,16 +1185,11 @@ ${diff}`;
     };
   }
 
-  function getFilteredIssues (issues) {
-    const filterSev = severitySelect.value;
+  function getVisibleIssues (issues) {
     const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-    const sorted = [...issues]
+    return [...issues]
       .filter(item => !isCommentHidden(item))
       .sort((a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5));
-
-    return filterSev === 'all' ? sorted
-      : filterSev === 'medium' ? sorted.filter(i => ['critical', 'high', 'medium'].includes(i.severity))
-      : sorted.filter(i => ['critical', 'high'].includes(i.severity));
   }
 
   function getVisibleDiscussionQuestions (questions) {
