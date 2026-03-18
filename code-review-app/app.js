@@ -10,9 +10,15 @@
   /* ── State ──────────────────────────────────────────── */
   let diffText        = '';
   let reviewData      = null;
+  let reviewResponseText = '';
   let parsedDiffFiles = [];
   let commentStatuses = {};
   let repoFiles       = {}; // { 'filename.js': 'full source string' }
+  let discussionMessages = [];
+  let discussionPending = false;
+  let discussionError = '';
+  let discussionDraft = '';
+  let discussionWidgetOpen = false;
 
   /* ── DOM refs ───────────────────────────────────────── */
   const uploadArea   = document.getElementById('upload-area');
@@ -32,8 +38,22 @@
   const reviewResults= document.getElementById('review-results');
   const discussionEmpty = document.getElementById('discussion-empty');
   const discussionContent = document.getElementById('discussion-content');
+  const discussionSuggestions = document.getElementById('discussion-suggestions');
+  const discussionMessagesEl = document.getElementById('discussion-messages');
+  const discussionStatus = document.getElementById('discussion-status');
+  const discussionForm = document.getElementById('discussion-form');
+  const discussionInput = document.getElementById('discussion-input');
+  const discussionSend = document.getElementById('discussion-send');
   const summaryEmpty = document.getElementById('summary-empty');
   const summaryContent= document.getElementById('summary-content');
+  const chatLauncher = document.getElementById('chat-launcher');
+  const floatingChat = document.getElementById('floating-chat');
+  const floatingChatClose = document.getElementById('floating-chat-close');
+  const floatingChatMessages = document.getElementById('floating-chat-messages');
+  const floatingChatStatus = document.getElementById('floating-chat-status');
+  const floatingChatForm = document.getElementById('floating-chat-form');
+  const floatingChatInput = document.getElementById('floating-chat-input');
+  const floatingChatSend = document.getElementById('floating-chat-send');
 
   const srcUploadArea  = document.getElementById('src-upload-area');
   const srcFileInput   = document.getElementById('src-file-input');
@@ -53,6 +73,29 @@
   });
 
   /* ── API key toggle ─────────────────────────────────── */
+  discussionForm.addEventListener('submit', event => {
+    event.preventDefault();
+    sendDiscussionMessage(discussionInput.value);
+  });
+  floatingChatForm.addEventListener('submit', event => {
+    event.preventDefault();
+    sendDiscussionMessage(floatingChatInput.value);
+  });
+
+  discussionInput.addEventListener('input', () => syncDiscussionDraft(discussionInput.value));
+  floatingChatInput.addEventListener('input', () => syncDiscussionDraft(floatingChatInput.value));
+  discussionInput.addEventListener('keydown', handleChatInputKeydown);
+  floatingChatInput.addEventListener('keydown', handleChatInputKeydown);
+
+  chatLauncher.addEventListener('click', () => {
+    discussionWidgetOpen = !discussionWidgetOpen;
+    renderDiscussion(reviewData);
+  });
+  floatingChatClose.addEventListener('click', () => {
+    discussionWidgetOpen = false;
+    renderDiscussion(reviewData);
+  });
+
   toggleKey.addEventListener('click', () => {
     const isPassword = apiKeyInput.type === 'password';
     apiKeyInput.type = isPassword ? 'text' : 'password';
@@ -130,7 +173,10 @@
   runBtn.addEventListener('click', runAnalysis);
 
   /* Enable run button when file + API key are present */
-  apiKeyInput.addEventListener('input', updateRunBtn);
+  apiKeyInput.addEventListener('input', () => {
+    updateRunBtn();
+    syncDiscussionComposerState();
+  });
 
   function updateRunBtn () {
     runBtn.disabled = !(diffText && apiKeyInput.value.trim());
@@ -142,7 +188,9 @@
     reader.onload = e => {
       diffText = e.target.result;
       reviewData = null;
+      reviewResponseText = '';
       commentStatuses = {};
+      resetDiscussionState();
       fileName.textContent = file.name;
       fileInfo.style.display = 'block';
       resetAnalysisViews();
@@ -155,9 +203,11 @@
   function clearFile () {
     diffText        = '';
     reviewData      = null;
+    reviewResponseText = '';
     parsedDiffFiles = [];
     commentStatuses = {};
     repoFiles       = {};
+    resetDiscussionState();
     fileInput.value    = '';
     srcFileInput.value = '';
     fileInfo.style.display    = 'none';
@@ -424,6 +474,10 @@
     if (!apiKey || !diffText) return;
 
     const model = modelSelect.value;
+    reviewData = null;
+    commentStatuses = {};
+    resetDiscussionState();
+    reviewResponseText = '';
 
     // Reset UI
     reviewResults.style.display = 'none';
@@ -441,6 +495,7 @@
       const response = await callGemini(apiKey, model, diffText, repoFiles);
       const parsed   = normalizeReviewData(parseGeminiResponse(response));
       commentStatuses = {};
+      reviewResponseText = response;
       reviewData     = parsed;
       renderDiff(diffText, { preserveTab: true });
       renderDiscussion(parsed);
@@ -491,6 +546,46 @@
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) throw new Error('Gemini returned an empty response.');
     return text;
+  }
+
+  async function callGeminiDiscussion (apiKey, model, history) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const body = {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: buildDiscussionContextPrompt() }]
+        },
+        {
+          role: 'model',
+          parts: [{ text: 'Context loaded. I will answer follow-up questions about the review using the code, diff, prior review, and earlier chat turns.' }]
+        },
+        ...history.map(message => ({
+          role: message.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: message.content }]
+        }))
+      ],
+      generationConfig: {
+        maxOutputTokens: 4096
+      }
+    };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`;
+      throw new Error(msg);
+    }
+
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('Gemini returned an empty discussion response.');
+    return text.trim();
   }
 
   function buildPrompt (diff, fullFiles = {}) {
@@ -547,7 +642,7 @@ Analyse the diff carefully and respond with a JSON object ONLY (no markdown fenc
   ],
   "discussion_questions": [
     {
-      "question": "Question to raise during the human code review",
+      "question": "Questions to raise during the human code review. These should be less certain, more open-ended, or architectural concerns that require human judgement. Phrase each as a clear question.",
       "file": "path/to/file.ext or empty string",
       "line": <number or null>,
       "side": "new" | "old",
@@ -570,6 +665,34 @@ Structure the review as a standard review:
 
 DIFF:
 ${diff}`;
+  }
+
+  function buildDiscussionContextPrompt () {
+    const reviewJson = reviewResponseText || JSON.stringify(reviewData || {}, null, 2);
+    const fileNames = Object.keys(repoFiles);
+    const codeSection = fileNames.length
+      ? fileNames.map(name => `\n### ${name}\n\`\`\`\n${repoFiles[name]}\n\`\`\``).join('\n')
+      : '\nNo full source files were uploaded. Use the diff below as the available code context.\n';
+
+    return `You are continuing a post-review discussion about a pull request.
+
+Answer as a senior engineer reviewing the code with the user.
+Use the uploaded code, the original review response, and the prior chat turns as your source of truth.
+If the initial review appears wrong, say so clearly and explain why using the code context.
+Reference files and line numbers when useful.
+If the uploaded context is insufficient to answer confidently, say that directly.
+Keep answers concise but technically specific.
+
+INITIAL CODE REVIEW RESPONSE:
+${reviewJson}
+
+FULL SOURCE FILES:
+${codeSection}
+
+DIFF:
+\`\`\`
+${diffText}
+\`\`\``;
   }
 
   /* ── Parse Gemini response ──────────────────────────── */
@@ -659,28 +782,180 @@ ${diff}`;
   }
 
   function renderDiscussion (data) {
-    discussionEmpty.style.display = 'none';
-    discussionContent.innerHTML = '';
-    const visibleQuestions = getVisibleDiscussionQuestions(data.discussion_questions || []);
+    const hasReview = Boolean(data);
+    const suggestions = getDiscussionSuggestions(data);
 
-    if (parsedDiffFiles.length === 0 && diffText) {
-      parsedDiffFiles = parseDiff(diffText);
+    discussionEmpty.style.display = hasReview ? 'none' : 'flex';
+    discussionContent.style.display = hasReview ? 'flex' : 'none';
+    chatLauncher.style.display = hasReview ? 'inline-flex' : 'none';
+    floatingChat.style.display = hasReview && discussionWidgetOpen ? 'flex' : 'none';
+
+    if (!hasReview) {
+      discussionSuggestions.innerHTML = '';
+      discussionMessagesEl.innerHTML = '';
+      floatingChatMessages.innerHTML = '';
+      discussionStatus.textContent = '';
+      floatingChatStatus.textContent = '';
+      syncDiscussionComposerState();
+      return;
     }
 
-    if (parsedDiffFiles.length === 0) {
-      const pre = document.createElement('pre');
-      pre.style.cssText = 'font-size:12px;color:var(--text-muted);white-space:pre-wrap;';
-      pre.textContent = diffText;
-      discussionContent.appendChild(pre);
+    renderDiscussionSuggestions(suggestions);
+    renderChatMessages(discussionMessagesEl, discussionMessages, suggestions);
+    renderChatMessages(floatingChatMessages, discussionMessages, suggestions);
+
+    const statusText = discussionError
+      ? `Discussion error: ${discussionError}`
+      : discussionPending
+        ? 'Gemini is replying with the current review context.'
+        : 'Context includes the uploaded code, diff, initial review response, and earlier chat turns.';
+
+    discussionStatus.textContent = statusText;
+    floatingChatStatus.textContent = statusText;
+    syncDiscussionComposerState();
+  }
+
+  async function sendDiscussionMessage (rawValue) {
+    if (discussionPending || !reviewData) return;
+
+    const message = String(rawValue || '').trim();
+    const apiKey = apiKeyInput.value.trim();
+    if (!message) return;
+
+    if (!apiKey) {
+      discussionError = 'Enter an API key before sending discussion messages.';
+      renderDiscussion(reviewData);
+      return;
+    }
+
+    discussionMessages.push({ role: 'user', content: message });
+    syncDiscussionDraft('');
+    discussionPending = true;
+    discussionError = '';
+    discussionWidgetOpen = true;
+    renderDiscussion(reviewData);
+
+    try {
+      const reply = await callGeminiDiscussion(apiKey, modelSelect.value, discussionMessages);
+      discussionMessages.push({ role: 'assistant', content: reply });
+    } catch (err) {
+      discussionError = err.message || 'Unknown error from Gemini API';
+    } finally {
+      discussionPending = false;
+      renderDiscussion(reviewData);
+    }
+  }
+
+  function renderDiscussionSuggestions (suggestions) {
+    discussionSuggestions.innerHTML = '';
+
+    if (!suggestions.length) {
+      discussionSuggestions.style.display = 'none';
+      return;
+    }
+
+    discussionSuggestions.style.display = 'flex';
+    suggestions.forEach(text => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chat-suggestion';
+      button.textContent = text;
+      button.addEventListener('click', () => sendDiscussionMessage(text));
+      discussionSuggestions.appendChild(button);
+    });
+  }
+
+  function renderChatMessages (container, messages, suggestions) {
+    container.innerHTML = '';
+
+    if (messages.length === 0) {
+      const welcome = document.createElement('div');
+      welcome.className = 'chat-welcome';
+      welcome.innerHTML = `
+        <h4>Start a follow-up discussion</h4>
+        <p>Ask why a finding matters, whether an issue is a false positive, or how to implement a fix.</p>
+        ${suggestions.length ? `<p class="chat-welcome-subtle">Try one of the suggested prompts above.</p>` : ''}
+      `;
+      container.appendChild(welcome);
     } else {
-      discussionContent.appendChild(buildAnnotatedDiffLayout(parsedDiffFiles, visibleQuestions, {
-        kind: 'discussion',
-        title: 'Discussion Questions',
-        emptyMessage: 'No discussion questions were raised for the human review.'
-      }));
+      messages.forEach(message => {
+        const bubble = document.createElement('article');
+        bubble.className = `chat-message chat-message-${message.role}`;
+        bubble.innerHTML = `
+          <div class="chat-message-meta">${message.role === 'assistant' ? 'AI reviewer' : 'You'}</div>
+          <div class="chat-message-body">${renderChatMessage(message.content)}</div>
+        `;
+        container.appendChild(bubble);
+      });
     }
 
-    discussionContent.style.display = 'block';
+    if (discussionPending) {
+      const pending = document.createElement('article');
+      pending.className = 'chat-message chat-message-assistant';
+      pending.innerHTML = `
+        <div class="chat-message-meta">AI reviewer</div>
+        <div class="chat-message-body"><span class="chat-typing"><span></span><span></span><span></span></span></div>
+      `;
+      container.appendChild(pending);
+    }
+
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function syncDiscussionDraft (value) {
+    discussionDraft = value;
+    if (discussionInput.value !== value) discussionInput.value = value;
+    if (floatingChatInput.value !== value) floatingChatInput.value = value;
+    syncDiscussionComposerState();
+  }
+
+  function syncDiscussionComposerState () {
+    const hasReview = Boolean(reviewData);
+    const hasApiKey = Boolean(apiKeyInput.value.trim());
+    const hasDraft = Boolean(discussionDraft.trim());
+    const disabled = !hasReview || discussionPending || !hasApiKey;
+
+    discussionInput.disabled = !hasReview || discussionPending;
+    floatingChatInput.disabled = !hasReview || discussionPending;
+    discussionSend.disabled = disabled || !hasDraft;
+    floatingChatSend.disabled = disabled || !hasDraft;
+    chatLauncher.disabled = !hasReview;
+  }
+
+  function handleChatInputKeydown (event) {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    event.currentTarget.closest('form')?.requestSubmit();
+  }
+
+  function resetDiscussionState () {
+    discussionMessages = [];
+    discussionPending = false;
+    discussionError = '';
+    discussionDraft = '';
+    discussionWidgetOpen = false;
+    discussionInput.value = '';
+    floatingChatInput.value = '';
+  }
+
+  function getDiscussionSuggestions (data) {
+    if (!data) return [];
+
+    const questions = getVisibleDiscussionQuestions(data.discussion_questions || [])
+      .map(item => item.question)
+      .filter(Boolean);
+    const issues = getVisibleIssues(data.issues || [])
+      .slice(0, 2)
+      .map(item => `How would you fix "${item.title}" in ${formatLocation(item) || 'this change'}?`);
+
+    return [...new Set([...questions.slice(0, 3), ...issues])].slice(0, 4);
+  }
+
+  function renderChatMessage (text) {
+    return escHtml(text || '')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>');
   }
 
   function buildIssueCard (issue) {
@@ -829,6 +1104,13 @@ ${diff}`;
     reviewLoading.style.display = 'none';
     discussionContent.style.display = 'none';
     discussionEmpty.style.display = 'flex';
+    discussionSuggestions.innerHTML = '';
+    discussionMessagesEl.innerHTML = '';
+    floatingChatMessages.innerHTML = '';
+    discussionStatus.textContent = '';
+    floatingChatStatus.textContent = '';
+    chatLauncher.style.display = 'none';
+    floatingChat.style.display = 'none';
     summaryContent.style.display = 'none';
     summaryEmpty.style.display = 'flex';
     reviewResults.innerHTML = `
@@ -841,6 +1123,7 @@ ${diff}`;
         </div>
       </div>`;
     reviewResults.style.display = 'block';
+    syncDiscussionComposerState();
   }
 
   /* ── Helpers ────────────────────────────────────────── */
@@ -850,11 +1133,18 @@ ${diff}`;
     reviewResults.innerHTML = '';
     reviewEmpty.style.display = 'flex';
     discussionContent.style.display = 'none';
-    discussionContent.innerHTML = '';
     discussionEmpty.style.display = 'flex';
+    discussionSuggestions.innerHTML = '';
+    discussionMessagesEl.innerHTML = '';
+    floatingChatMessages.innerHTML = '';
+    discussionStatus.textContent = '';
+    floatingChatStatus.textContent = '';
+    chatLauncher.style.display = 'none';
+    floatingChat.style.display = 'none';
     summaryContent.style.display = 'none';
     summaryContent.innerHTML = '';
     summaryEmpty.style.display = 'flex';
+    syncDiscussionComposerState();
   }
 
   function buildAnnotationNavigator (placements, anchorMap, viewer, options) {
@@ -1228,5 +1518,7 @@ ${diff}`;
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
   }
+
+  syncDiscussionComposerState();
 
 })();

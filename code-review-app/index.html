@@ -145,7 +145,7 @@
         <div class="tab-bar">
           <button class="tab active" data-tab="diff">Diff View</button>
           <button class="tab" data-tab="review">Standard Review</button>
-          <button class="tab" data-tab="discussion">Discussion</button>
+          <button class="tab" data-tab="discussion">Review Chat</button>
           <button class="tab" data-tab="summary">Summary</button>
         </div>
 
@@ -175,9 +175,24 @@
         <div class="tab-content" id="tab-discussion">
           <div class="empty-state" id="discussion-empty">
             <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <p>Run the analysis to see discussion questions on the diff</p>
+            <p>Run the analysis to discuss the review with AI</p>
           </div>
-          <div id="discussion-content" style="display:none;"></div>
+          <div id="discussion-content" class="chat-shell" style="display:none;">
+            <div class="chat-panel-header">
+              <div>
+                <p class="chat-kicker">Review Chat</p>
+                <h3>Discuss the review with AI</h3>
+              </div>
+              <p class="chat-panel-copy">Uses the uploaded code, diff, review response, and earlier chat messages as context.</p>
+            </div>
+            <div id="discussion-suggestions" class="chat-suggestions"></div>
+            <div id="discussion-messages" class="chat-messages"></div>
+            <div id="discussion-status" class="chat-status" aria-live="polite"></div>
+            <form id="discussion-form" class="chat-composer">
+              <textarea id="discussion-input" class="chat-input" rows="3" placeholder="Ask about a finding, edge case, or suggested fix..."></textarea>
+              <button class="btn btn-primary" id="discussion-send" type="submit">Send</button>
+            </form>
+          </div>
         </div>
 
         <!-- Summary -->
@@ -192,6 +207,24 @@
       </section>
     </main>
   </div>
+
+  <button id="chat-launcher" class="chat-launcher" type="button" style="display:none;">Review Chat</button>
+
+  <section id="floating-chat" class="floating-chat" style="display:none;">
+    <div class="floating-chat-header">
+      <div>
+        <p class="chat-kicker">Review Chat</p>
+        <h3>AI Discussion</h3>
+      </div>
+      <button id="floating-chat-close" class="btn-icon" type="button" title="Close">X</button>
+    </div>
+    <div id="floating-chat-messages" class="chat-messages chat-messages-compact"></div>
+    <div id="floating-chat-status" class="chat-status" aria-live="polite"></div>
+    <form id="floating-chat-form" class="chat-composer chat-composer-compact">
+      <textarea id="floating-chat-input" class="chat-input" rows="2" placeholder="Ask a follow-up..."></textarea>
+      <button class="btn btn-primary" id="floating-chat-send" type="submit">Send</button>
+    </form>
+  </section>
 
   <script src="app.js"></script>
 </body>

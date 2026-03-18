@@ -1,0 +1,238 @@
+From f992c673bf59fd1d2c20348172fd42af48d6b862 Mon Sep 17 00:00:00 2001
+From: Iampete1 <iampete@hotmail.co.uk>
+Date: Tue, 24 Feb 2026 15:43:57 +0000
+Subject: [PATCH] Rover: populate avalable modes user selectable bit and track
+ changes
+
+---
+ Rover/GCS_MAVLink_Rover.cpp | 10 ++++++---
+ Rover/Rover.h               |  3 +++
+ Rover/mode.h                | 15 +++++++++++++
+ Rover/mode_dock.cpp         |  9 +++++++-
+ Rover/mode_follow.cpp       | 10 ++++++++-
+ Rover/mode_smart_rtl.cpp    |  9 +++++++-
+ Rover/system.cpp            | 42 +++++++++++++++++++++++++++++++++++++
+ 7 files changed, 92 insertions(+), 6 deletions(-)
+
+diff --git a/Rover/GCS_MAVLink_Rover.cpp b/Rover/GCS_MAVLink_Rover.cpp
+index f91076bf7af96..f7de6251d7d42 100644
+--- a/Rover/GCS_MAVLink_Rover.cpp
++++ b/Rover/GCS_MAVLink_Rover.cpp
+@@ -1057,15 +1057,19 @@ uint8_t GCS_MAVLINK_Rover::send_available_mode(uint8_t index) const
+ 
+     // Ask the mode for its name and number
+     const char* name = modes[index_zero]->name();
+-    const uint8_t mode_number = (uint8_t)modes[index_zero]->mode_number();
++    const Mode::Number mode_number = modes[index_zero]->mode_number();
++
++    // the check here must be the same as the one in `get_available_mode_enabled_mask`
++    const bool user_selectable = modes[index_zero]->enabled() && rover.gcs_mode_enabled(mode_number);
+ 
+     mavlink_msg_available_modes_send(
+         chan,
+         mode_count,
+         index,
+         MAV_STANDARD_MODE::MAV_STANDARD_MODE_NON_STANDARD,
+-        mode_number,
+-        0, // MAV_MODE_PROPERTY bitmask
++        (uint8_t)mode_number,
++        // MAV_MODE_PROPERTY bitmask,
++        user_selectable ? 0 : MAV_MODE_PROPERTY_NOT_USER_SELECTABLE,
+         name
+     );
+ 
+diff --git a/Rover/Rover.h b/Rover/Rover.h
+index 2b4b4d2cb2d66..8a2e8e5828bbf 100644
+--- a/Rover/Rover.h
++++ b/Rover/Rover.h
+@@ -390,6 +390,9 @@ class Rover : public AP_Vehicle {
+         return control_mode == &mode_auto;
+     }
+ 
++    // Return mask of enabled modes, order does not matter, its just for tracking changes
++    uint32_t get_available_mode_enabled_mask() const override;
++
+     void startup_INS(void);
+     void notify_mode(const Mode *new_mode);
+     uint8_t check_digital_pin(uint8_t pin);
+diff --git a/Rover/mode.h b/Rover/mode.h
+index 7d025c6bdc47a..2e8cbdcf5d70b 100644
+--- a/Rover/mode.h
++++ b/Rover/mode.h
+@@ -37,6 +37,9 @@ class Mode
+     // do not allow copying
+     CLASS_NO_COPY(Mode);
+ 
++    // Return true if this mode is enabled, used by MAVLink available mode
++    virtual bool enabled() const { return true; }
++
+     // enter this mode, returns false if we failed to enter
+     bool enter();
+ 
+@@ -741,6 +744,9 @@ class ModeSmartRTL : public Mode
+     const char *name() const override { return "Smart RTL"; }
+     const char *name4() const override { return "SRTL"; }
+ 
++    // Return true if this mode is enabled, used by MAVLink available mode
++    bool enabled() const override;
++
+     // methods that affect movement of the vehicle in this mode
+     void update() override;
+ 
+@@ -814,6 +820,9 @@ class ModeInitializing : public Mode
+     const char *name() const override { return "Initialising"; }
+     const char *name4() const override { return "INIT"; }
+ 
++    // Return true if this mode is enabled, used by MAVLink available mode
++    bool enabled() const override { return false; };
++
+     // methods that affect movement of the vehicle in this mode
+     void update() override { }
+ 
+@@ -836,6 +845,9 @@ class ModeFollow : public Mode
+     const char *name() const override { return "Follow"; }
+     const char *name4() const override { return "FOLL"; }
+ 
++    // Return true if this mode is enabled, used by MAVLink available mode
++    bool enabled() const override;
++
+     // methods that affect movement of the vehicle in this mode
+     void update() override;
+ 
+@@ -904,6 +916,9 @@ class ModeDock : public Mode
+     const char *name() const override { return "Dock"; }
+     const char *name4() const override { return "DOCK"; }
+ 
++    // Return true if this mode is enabled, used by MAVLink available mode
++    bool enabled() const override;
++
+     // methods that affect movement of the vehicle in this mode
+     void update() override;
+ 
+diff --git a/Rover/mode_dock.cpp b/Rover/mode_dock.cpp
+index 9fd5d531988a8..ed3421b068a12 100644
+--- a/Rover/mode_dock.cpp
++++ b/Rover/mode_dock.cpp
+@@ -55,11 +55,18 @@ ModeDock::ModeDock(void) : Mode()
+ 
+ #define AR_DOCK_ACCEL_MAX              20.0    // acceleration used when user has specified no acceleration limit
+ 
++// Return true if this mode is enabled
++bool ModeDock::enabled() const
++{
++    // Dock mode requires precland
++    return rover.precland.enabled();
++}
++
+ // initialize dock mode
+ bool ModeDock::_enter()
+ {
+     // refuse to enter the mode if dock is not in sight
+-    if (!rover.precland.enabled() || !rover.precland.target_acquired()) {
++    if (!enabled() || !rover.precland.target_acquired()) {
+         GCS_SEND_TEXT(MAV_SEVERITY_NOTICE, "Dock: target not acquired");
+         return false;
+     }
+diff --git a/Rover/mode_follow.cpp b/Rover/mode_follow.cpp
+index f9dd34db20420..2a7c0cfcc686c 100644
+--- a/Rover/mode_follow.cpp
++++ b/Rover/mode_follow.cpp
+@@ -1,10 +1,18 @@
+ #include "Rover.h"
+ 
+ #if MODE_FOLLOW_ENABLED
++
++// Return true if this mode is enabled
++bool ModeFollow::enabled() const
++{
++    // Follow mode requires follow lib
++    return g2.follow.enabled();
++}
++
+ // initialize follow mode
+ bool ModeFollow::_enter()
+ {
+-    if (!g2.follow.enabled()) {
++    if (!enabled()) {
+         return false;
+     }
+ 
+diff --git a/Rover/mode_smart_rtl.cpp b/Rover/mode_smart_rtl.cpp
+index f96388c4ca555..1f56edda8c4ae 100644
+--- a/Rover/mode_smart_rtl.cpp
++++ b/Rover/mode_smart_rtl.cpp
+@@ -1,5 +1,12 @@
+ #include "Rover.h"
+ 
++// Return true if this mode is enabled, used by MAVLink available mode
++bool ModeSmartRTL::enabled() const
++{
++    // Smart RTL mode requires smart RTL lib
++    return g2.smart_rtl.enabled();
++}
++
+ bool ModeSmartRTL::_enter()
+ {
+     // SmartRTL requires EKF (not DCM)
+@@ -9,7 +16,7 @@ bool ModeSmartRTL::_enter()
+     }
+ 
+     // refuse to enter SmartRTL if smart RTL's home has not been set
+-    if (!g2.smart_rtl.is_active()) {
++    if (!enabled() || !g2.smart_rtl.is_active()) {
+         return false;
+     }
+ 
+diff --git a/Rover/system.cpp b/Rover/system.cpp
+index bbd529e930d63..4398e94187786 100644
+--- a/Rover/system.cpp
++++ b/Rover/system.cpp
+@@ -207,6 +207,48 @@ bool Rover::gcs_mode_enabled(const Mode::Number mode_num) const
+     return !block_GCS_mode_change((uint8_t)mode_num, mode_list, ARRAY_SIZE(mode_list));
+ }
+ 
++// Return mask of enabled modes, order does not matter, its just for tracking changes
++uint32_t Rover::get_available_mode_enabled_mask() const
++{
++    const Mode* flight_modes[] {
++        &rover.mode_manual,
++        &rover.mode_acro,
++        &rover.mode_steering,
++        &rover.mode_hold,
++        &rover.mode_loiter,
++#if MODE_FOLLOW_ENABLED
++        &rover.mode_follow,
++#endif
++        &rover.mode_simple,
++        &rover.g2.mode_circle,
++        &rover.mode_auto,
++        &rover.mode_rtl,
++        &rover.mode_smartrtl,
++        &rover.mode_guided,
++        &rover.mode_initializing,
++#if MODE_DOCK_ENABLED
++        (Mode *)rover.g2.mode_dock_ptr,
++#endif
++    };
++
++    static_assert(ARRAY_SIZE(flight_modes) <= 32, "Flight modes must fit in 32 bit bitmask");
++
++    uint32_t mask = 0;
++    for (uint8_t i = 0; i < ARRAY_SIZE(flight_modes); i++) {
++        const Mode* mode = flight_modes[i];
++
++        // the check here must be the same as the one in `send_available_mode`
++        const bool user_selectable = mode->enabled() && rover.gcs_mode_enabled(mode->mode_number());
++
++        if (user_selectable) {
++            mask |= 1U << i;
++        }
++    }
++
++    return mask;
++}
++
++
+ bool Rover::set_mode(Mode &new_mode, ModeReason reason)
+ {
+     if (control_mode == &new_mode) {
