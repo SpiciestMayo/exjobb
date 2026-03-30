@@ -637,7 +637,10 @@ Analyse the diff carefully and respond with a JSON object ONLY (no markdown fenc
       "line": <number or null>,
       "side": "new" | "old",
       "description": "Concrete, directly actionable issue only. Prefix with [Limited context] if you cannot fully assess due to missing surrounding code.",
-      "suggestion": "Concrete suggestion or corrected code (optional)"
+      "suggestion": "Concrete suggestion or corrected code (optional)",
+      "why_it_matters": "What can go wrong if this stays. Keep it to 1-2 short sentences.",
+      "concept_to_learn": "The principle, pattern, or best practice behind this issue. Keep it to 1-2 short sentences.",
+      "next_time_check": "A concrete future review check, phrased as a short question or rule of thumb."
     }
   ],
   "discussion_questions": [
@@ -657,6 +660,10 @@ Structure the review as a standard review:
 - "summary_bullets" must describe the actual changes in the PR, not generic quality statements.
 - "issues" must only contain simple, concrete, directly actionable findings such as poor naming, race conditions, missing validation, incorrect conditions, broken edge cases, or similar clear defects.
 - Every item in "issues" must point to the most relevant changed line in the diff using "file", "line", and "side". Use "side": "new" for added/context lines and "side": "old" for removed lines.
+- Every item in "issues" must include "why_it_matters", "concept_to_learn", and "next_time_check".
+- "why_it_matters" must explain the practical risk or consequence in 1-2 sentences.
+- "concept_to_learn" must teach the underlying engineering principle or pattern, not just restate the issue.
+- "next_time_check" must be a concrete review question or rule of thumb, not generic advice.
 - "discussion_questions" must contain less certain, broader, or more architectural concerns that should be discussed by humans later. Each item must be phrased as a question.
 - Every item in "discussion_questions" must point to the most relevant changed line in the diff using "file", "line", and "side".
 - Do not duplicate the same concern in both "issues" and "discussion_questions".
@@ -945,11 +952,17 @@ ${diffText}
     const questions = getVisibleDiscussionQuestions(data.discussion_questions || [])
       .map(item => item.question)
       .filter(Boolean);
-    const issues = getVisibleIssues(data.issues || [])
+    const visibleIssues = getVisibleIssues(data.issues || []);
+    const pedagogicalIssue = visibleIssues.find(item => item.concept_to_learn);
+    const issues = visibleIssues
       .slice(0, 2)
       .map(item => `How would you fix "${item.title}" in ${formatLocation(item) || 'this change'}?`);
 
-    return [...new Set([...questions.slice(0, 3), ...issues])].slice(0, 4);
+    return [...new Set([
+      pedagogicalIssue ? `Explain the principle behind "${pedagogicalIssue.title}" in simpler terms.` : '',
+      ...questions.slice(0, 3),
+      ...issues
+    ].filter(Boolean))].slice(0, 4);
   }
 
   function renderChatMessage (text) {
@@ -978,10 +991,32 @@ ${diffText}
       </div>
       <div class="review-issue-body">
         <p>${desc}</p>
+        ${renderLearningFields(issue)}
         ${issue.suggestion ? `<p class="review-section-title" style="margin-top:10px;">Suggestion</p><pre>${escHtml(issue.suggestion)}</pre>` : ''}
       </div>`;
     card.querySelector('.review-issue-body')?.appendChild(buildCommentActionBar(issue, { allowAiDiscussion: true }));
     return card;
+  }
+
+  function renderLearningFields (issue) {
+    const learningFields = [
+      { label: 'Why this matters', value: issue.why_it_matters },
+      { label: 'Concept to learn', value: issue.concept_to_learn },
+      { label: 'Next time, check this', value: issue.next_time_check }
+    ].filter(item => item.value);
+
+    if (learningFields.length === 0) return '';
+
+    return `
+      <div class="issue-learning-block">
+        ${learningFields.map(item => `
+          <div class="issue-learning-item">
+            <p class="issue-learning-label">${item.label}</p>
+            <p class="issue-learning-copy">${renderInlineMarkup(item.value)}</p>
+          </div>
+        `).join('')}
+      </div>
+    `;
   }
 
   function buildStandardReviewCard (data) {
@@ -1042,6 +1077,7 @@ ${diffText}
     const lowAndInfoCount = (stats.low ?? 0) + (stats.info ?? 0);
     const discussionCount = getVisibleDiscussionQuestions(data.discussion_questions || []).length;
     const verdictIcon = verdict === 'APPROVE' ? '✓' : verdict === 'REJECT' ? '✕' : '~';
+    const keyLessons = getKeyLessonsFromIssues(data.issues || []);
 
     summaryContent.innerHTML = `
       <div class="summary-overview">
@@ -1054,6 +1090,11 @@ ${diffText}
       <p class="review-section-title">Change Summary</p>
       <div class="summary-overview">
         ${renderSummaryBulletsHtml(data.summary_bullets)}
+      </div>
+
+      <p class="review-section-title">Key Lessons from this PR</p>
+      <div class="summary-overview">
+        ${renderKeyLessonsHtml(keyLessons)}
       </div>
 
       <p class="review-section-title">Review Breakdown</p>
@@ -1487,7 +1528,10 @@ ${diffText}
         line: normalizeLineNumber(item?.line),
         side: normalizeDiffSide(item?.side),
         description: item?.description || '',
-        suggestion: item?.suggestion || ''
+        suggestion: item?.suggestion || '',
+        why_it_matters: item?.why_it_matters || '',
+        concept_to_learn: item?.concept_to_learn || '',
+        next_time_check: item?.next_time_check || ''
       }))
       : [];
     const discussionQuestions = Array.isArray(review.discussion_questions)
@@ -1543,6 +1587,34 @@ ${diffText}
     return `
       <ul class="summary-bullets">
         ${bullets.map(bullet => `<li>${renderInlineMarkup(bullet)}</li>`).join('')}
+      </ul>
+    `;
+  }
+
+  function getKeyLessonsFromIssues (issues) {
+    const visibleIssues = getVisibleIssues(issues || []);
+    const seen = new Set();
+
+    return visibleIssues
+      .map(item => String(item.concept_to_learn || '').trim())
+      .filter(Boolean)
+      .filter(item => {
+        const normalized = item.toLowerCase();
+        if (seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      })
+      .slice(0, 3);
+  }
+
+  function renderKeyLessonsHtml (lessons) {
+    if (!Array.isArray(lessons) || lessons.length === 0) {
+      return '<div class="section-empty">No reusable lessons were generated for this review.</div>';
+    }
+
+    return `
+      <ul class="summary-bullets summary-lessons">
+        ${lessons.map(lesson => `<li>${renderInlineMarkup(lesson)}</li>`).join('')}
       </ul>
     `;
   }

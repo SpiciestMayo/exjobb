@@ -1252,6 +1252,34 @@ kbd {
   white-space: pre-wrap;
 }
 
+.issue-learning-block {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.issue-learning-item {
+  background: rgba(68,147,248,0.06);
+  border: 1px solid rgba(68,147,248,0.14);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.issue-learning-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.issue-learning-copy {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
 .review-section-title {
   font-size: 11px;
   font-weight: 700;
@@ -1314,6 +1342,10 @@ kbd {
 .summary-bullets li {
   color: var(--text-muted);
   line-height: 1.7;
+}
+
+.summary-lessons li::marker {
+  color: var(--accent);
 }
 
 .summary-bullets strong,
