@@ -502,7 +502,7 @@
       renderReview(parsed);
       renderSummary(parsed);
     } catch (err) {
-      showReviewError(err.message || 'Unknown error from Gemini API');
+      showReviewError(err);
     } finally {
       runBtn.disabled = false;
       runBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> RUN ANALYSIS`;
@@ -538,8 +538,7 @@
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      const msg = errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`;
-      throw new Error(msg);
+      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`);
     }
 
     const data = await res.json();
@@ -578,8 +577,7 @@
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      const msg = errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`;
-      throw new Error(msg);
+      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`);
     }
 
     const data = await res.json();
@@ -1142,7 +1140,10 @@ ${diffText}
   }
 
   /* ── Error display ──────────────────────────────────── */
-  function showReviewError (msg) {
+  function showReviewError (error) {
+    const userMessage = error?.userMessage || error?.message || 'Unknown error from Gemini API';
+    const apiMessage = error?.apiMessage || error?.message || '';
+
     reviewLoading.style.display = 'none';
     discussionContent.style.display = 'none';
     discussionEmpty.style.display = 'flex';
@@ -1160,12 +1161,25 @@ ${diffText}
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:1px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
         <div>
           <strong>API Error</strong><br/>
-          ${escHtml(msg)}<br/>
+          ${escHtml(userMessage)}<br/>
           <span style="font-size:12px;opacity:.8;">Check your API key, model selection, and ensure the Gemini API is enabled in Google AI Studio.</span>
         </div>
-      </div>`;
+      </div>
+      ${apiMessage ? `
+        <div class="error-detail-card">
+          <p class="error-detail-title">Exact API message</p>
+          <pre class="error-detail-message">${escHtml(apiMessage)}</pre>
+        </div>
+      ` : ''}`;
     reviewResults.style.display = 'block';
     syncDiscussionComposerState();
+  }
+
+  function createStructuredApiError (message) {
+    const error = new Error(message || 'Unknown error from Gemini API');
+    error.apiMessage = message || '';
+    error.userMessage = message || 'Unknown error from Gemini API';
+    return error;
   }
 
   /* ── Helpers ────────────────────────────────────────── */
