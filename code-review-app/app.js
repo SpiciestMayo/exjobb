@@ -607,7 +607,7 @@
       ? `You have been given both the diff AND the full source of ${fileNames.length} file(s). Use the full files for complete context when identifying issues.`
       : `You only have the diff — you cannot see surrounding code outside the changed hunks. Where your assessment is limited by missing context, prefix that issue's description with [Limited context].`;
 
-    return `You are an expert senior software engineer performing a thorough code review of a GitHub Pull Request.
+    return `Perform a code review of a GitHub Pull Request.
 
 
 ${contextNote}${fileSection}
@@ -678,6 +678,7 @@ ${diff}`;
 
 Answer as a senior engineer reviewing the code with the user.
 Use the uploaded code, the original review response, and the prior chat turns as your source of truth.
+Some user messages may quote or summarize a specific review finding. Treat that finding as the focus of the reply while still validating it against the code context.
 If the initial review appears wrong, say so clearly and explain why using the code context.
 Reference files and line numbers when useful.
 If the uploaded context is insufficient to answer confidently, say that directly.
@@ -979,7 +980,7 @@ ${diffText}
         <p>${desc}</p>
         ${issue.suggestion ? `<p class="review-section-title" style="margin-top:10px;">Suggestion</p><pre>${escHtml(issue.suggestion)}</pre>` : ''}
       </div>`;
-    card.querySelector('.review-issue-body')?.appendChild(buildCommentActionBar(issue));
+    card.querySelector('.review-issue-body')?.appendChild(buildCommentActionBar(issue, { allowAiDiscussion: true }));
     return card;
   }
 
@@ -1255,13 +1256,22 @@ ${diffText}
       <p class="diff-annotation-copy">${desc}</p>
       ${annotation.suggestion ? `<pre>${escHtml(annotation.suggestion)}</pre>` : ''}
     `;
-    card.appendChild(buildCommentActionBar(annotation));
+    card.appendChild(buildCommentActionBar(annotation, { allowAiDiscussion: true }));
     return card;
   }
 
-  function buildCommentActionBar (item) {
+  function buildCommentActionBar (item, options = {}) {
     const actions = document.createElement('div');
     actions.className = 'comment-actions';
+
+    if (options.allowAiDiscussion) {
+      const discussButton = document.createElement('button');
+      discussButton.type = 'button';
+      discussButton.className = 'comment-action-btn comment-action-btn-discuss';
+      discussButton.textContent = 'Discuss with AI';
+      discussButton.addEventListener('click', () => startIssueDiscussion(item));
+      actions.appendChild(discussButton);
+    }
 
     const ignoredButton = document.createElement('button');
     ignoredButton.type = 'button';
@@ -1278,6 +1288,41 @@ ${diffText}
     actions.appendChild(ignoredButton);
     actions.appendChild(fixedButton);
     return actions;
+  }
+
+  function startIssueDiscussion (issue) {
+    if (!reviewData || !issue) return;
+    discussionWidgetOpen = true;
+    renderDiscussion(reviewData);
+    sendDiscussionMessage(buildIssueFollowUpPrompt(issue));
+  }
+
+  function buildIssueFollowUpPrompt (issue) {
+    const location = formatLocation(issue) || 'No file/line provided';
+    const parts = [
+      'Review this concrete issue from the PR review and help me reason about it.',
+      '',
+      `Issue title: ${issue.title || 'Issue'}`,
+      `Severity: ${String(issue.severity || 'info').toUpperCase()}`,
+      `Location: ${location}`,
+      `Description: ${issue.description || 'No description provided.'}`
+    ];
+
+    if (issue.suggestion) {
+      parts.push(`Suggested fix from the review: ${issue.suggestion}`);
+    }
+
+    parts.push(
+      '',
+      'Please:',
+      '1. Validate whether this finding seems correct given the available code context.',
+      '2. Explain why it matters and what could break in practice.',
+      '3. Say clearly if this might be a false positive or context-dependent.',
+      '4. Propose the smallest safe fix.',
+      '5. Reference files and line numbers when useful.'
+    );
+
+    return parts.join('\n');
   }
 
   function setCommentStatus (commentId, status) {
