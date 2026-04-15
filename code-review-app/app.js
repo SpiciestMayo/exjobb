@@ -586,9 +586,55 @@
     return text.trim();
   }
 
+  function buildIssueWritingStyleExamples () {
+    return `WRITING STYLE FOR REVIEW COMMENTS:
+Use these as writing-style examples for issue comments. They show the tone, level of specificity, and teaching style expected in each issue field.
+
+Example issue writing style 1:
+{
+  "title": "Guard against missing input before parsing",
+  "description": "This path parses the value immediately, but the new flow does not first check that the input exists. Add a guard clause before parsing so invalid input fails in a controlled way.",
+  "suggestion": "Return early when the input is empty or undefined, then continue with parsing only for validated values.",
+  "why_it_matters": "Without this check, malformed requests can trigger runtime errors instead of a predictable validation response. That makes the failure harder to handle and debug.",
+  "concept_to_learn": "Validate external input at the boundary before passing it into parsing or transformation logic. Early validation keeps the rest of the code simpler and safer.",
+  "next_time_check": "Does this new path validate required input before parsing, indexing, or converting it?"
+}
+
+Example issue writing style 2:
+{
+  "title": "Keep the state update consistent with the new branch",
+  "description": "The new branch updates the main value but leaves the related status field untouched. Update both values together so the state still represents one coherent result.",
+  "suggestion": "Move the related assignments into the same branch or helper so the data and its status are updated in one place.",
+  "why_it_matters": "Partially updated state can make later logic act on mismatched information. Those bugs are often intermittent and difficult to trace back to the original update.",
+  "concept_to_learn": "When two fields describe the same business event, update them together to preserve invariants. Grouping related mutations reduces hidden state drift.",
+  "next_time_check": "When this branch changes a core value, are the dependent fields updated in the same operation?"
+}
+
+Example issue writing style 3:
+{
+  "title": "Handle the fallback path explicitly",
+  "description": "The new condition covers the happy path, but the fallback behaviour is now implicit. Make the fallback branch explicit so unexpected values are handled deliberately.",
+  "suggestion": "Add an explicit else branch or default case that documents the intended fallback behaviour.",
+  "why_it_matters": "Implicit fallbacks can hide edge cases until production data reaches them. An explicit branch makes the behaviour easier to reason about and test.",
+  "concept_to_learn": "Conditionals should make important edge-case behaviour obvious, not accidental. Explicit fallback logic improves readability and reduces surprise.",
+  "next_time_check": "If this condition is false, is the fallback behaviour explicit and easy to verify?"
+}
+
+Rules for these examples:
+- These are style examples only. Do not copy them verbatim.
+- Base every issue on the actual diff and the actual risk in this PR.
+- Do not invent issues just because the examples sound plausible.
+- Keep the tone concise, specific, neutral, and directly actionable.
+- Prefer the smallest safe fix in "suggestion".
+- Make "why_it_matters", "concept_to_learn", and "next_time_check" short but genuinely useful.
+
+Use this tone and level of specificity, but write each comment from the real code in the diff.`;
+  }
+
   function buildPrompt (diff, fullFiles = {}) {
     const fileNames  = Object.keys(fullFiles);
     const hasContext = fileNames.length > 0;
+    const writingStyleSection = buildIssueWritingStyleExamples();
 
     let fileSection = '';
     if (hasContext) {
@@ -668,6 +714,8 @@ Structure the review as a standard review:
 - If there are no concrete issues or no discussion questions, return an empty array for that field.
 - If no issues exist at a severity level, set that count to 0.
 
+${writingStyleSection}
+
 DIFF:
 ${diff}`;
   }
@@ -681,7 +729,6 @@ ${diff}`;
 
     return `You are continuing a post-review discussion about a pull request.
 
-Answer as a senior engineer reviewing the code with the user.
 Use the uploaded code, the original review response, and the prior chat turns as your source of truth.
 Some user messages may quote or summarize a specific review finding. Treat that finding as the focus of the reply while still validating it against the code context.
 If the initial review appears wrong, say so clearly and explain why using the code context.
