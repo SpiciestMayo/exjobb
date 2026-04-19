@@ -62,6 +62,26 @@
             <button class="btn btn-outline" onclick="document.getElementById('src-file-input').click()">Browse Files</button>
           </div>
           <div id="src-file-list" class="src-file-list" style="display:none;"></div>
+
+          <!-- Step 3: Review guide -->
+          <p class="upload-step-label" style="margin-top:14px;"><span class="step-num">3</span> Review Guide <span class="optional-tag-sm">optional</span></p>
+          <div class="upload-area upload-area-sm" id="guide-upload-area">
+            <input type="file" id="guide-file-input" accept=".txt,.md,.markdown,.json,.yaml,.yml,.xml,.html,.css,.scss,.js,.ts,.jsx,.tsx,.py,.java,.cs,.cpp,.c,.h,.go,.rb,.php,.swift,.kt,.rs,.sh,.bash,.sql,.vue,.svelte,.dart,.ex,.exs,.lua,.r,.scala,.tf,.toml,.ini,.conf" hidden />
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+            <p>Drag &amp; drop one customization guide</p>
+            <button class="btn btn-outline" onclick="document.getElementById('guide-file-input').click()">Browse Guide</button>
+          </div>
+          <div id="guide-file-info" class="src-file-list" style="display:none;"></div>
+
+          <!-- Step 4: Review documents -->
+          <p class="upload-step-label" style="margin-top:14px;"><span class="step-num">4</span> Review Documents <span class="optional-tag-sm">optional standards/context</span></p>
+          <div class="upload-area upload-area-sm" id="review-doc-upload-area">
+            <input type="file" id="review-doc-file-input" accept=".txt,.md,.markdown,.json,.yaml,.yml,.xml,.html,.css,.scss,.js,.ts,.jsx,.tsx,.py,.java,.cs,.cpp,.c,.h,.go,.rb,.php,.swift,.kt,.rs,.sh,.bash,.sql,.vue,.svelte,.dart,.ex,.exs,.lua,.r,.scala,.tf,.toml,.ini,.conf" multiple hidden />
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+            <p>Drag &amp; drop coding standards or context files</p>
+            <button class="btn btn-outline" onclick="document.getElementById('review-doc-file-input').click()">Browse Documents</button>
+          </div>
+          <div id="review-doc-file-list" class="src-file-list" style="display:none;"></div>
         </section>
 
         <!-- How-to modal -->
@@ -99,7 +119,7 @@
                 <div class="how-step-num">3</div>
                 <div>
                   <strong>Upload here</strong>
-                  <p>Upload the <code>.diff</code> file in slot&nbsp;<strong>①</strong> and any source files in slot&nbsp;<strong>②</strong>, then click <strong>RUN ANALYSIS</strong>.</p>
+                  <p>Upload the <code>.diff</code> file in slot&nbsp;<strong>1</strong>, add optional source or review documents in the remaining slots, then click <strong>RUN ANALYSIS</strong>.</p>
                 </div>
               </div>
             </div>
@@ -117,9 +137,19 @@
 
           <label class="form-label" style="margin-top:14px;">Model</label>
           <select class="form-select" id="model">
-            <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
-            <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite Preview</option>
+            <option value="gemini-3-flash-preview" selected>Gemini 3 Flash Preview</option>
+            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
           </select>
+
+          <label class="form-label" style="margin-top:14px;">Generation Mode</label>
+          <label class="generation-mode-control">
+            <span class="generation-mode-copy">
+              <span id="generation-mode-value" class="generation-mode-value">Default (temperature 1.0, random seed)</span>
+            </span>
+            <input id="generation-mode" class="generation-mode-input" type="checkbox" aria-label="Use best-effort reproducible generation mode" />
+            <span class="generation-mode-switch" aria-hidden="true"></span>
+          </label>
+          <p class="hint-text">Uses temperature 0, seed 42, topK 1, topP 1, and one candidate. Gemini can still vary between runs.</p>
 
           <label class="form-label" style="margin-top:14px;">Google AI Studio API Key</label>
           <div class="api-key-wrapper">
@@ -182,7 +212,7 @@
                 <p class="chat-kicker">Review Chat</p>
                 <h3>Discuss the review with AI</h3>
               </div>
-              <p class="chat-panel-copy">Uses the uploaded code, diff, review response, and earlier chat messages as context.</p>
+              <p class="chat-panel-copy">Uses the uploaded code, optional review documents, diff, review response, and earlier chat messages as context.</p>
             </div>
             <div id="discussion-suggestions" class="chat-suggestions"></div>
             <div id="discussion-messages" class="chat-messages"></div>
