@@ -1,7 +1,7 @@
 /* ════════════════════════════════════════════════════════
    AI Code Review – app.js
-   Pure browser-side JS; calls Google Gemini directly via
-   the Google AI Studio REST API (no backend required).
+   Pure browser-side JS; calls supported AI providers directly
+   from the browser (no backend required).
    ════════════════════════════════════════════════════════ */
 
 (function () {
@@ -11,6 +11,10 @@
   let diffText        = '';
   let reviewData      = null;
   let reviewResponseText = '';
+  let reviewAuditData = null;
+  let reviewAuditResponseText = '';
+  let reviewAuditPending = false;
+  let reviewAuditError = '';
   let parsedDiffFiles = [];
   let commentStatuses = {};
   let repoFiles       = {}; // { 'filename.js': 'full source string' }
@@ -25,12 +29,14 @@
   const TEXT_FILE_EXTS = /\.(js|ts|jsx|tsx|py|java|cs|cpp|c|h|go|rb|php|swift|kt|rs|html|css|scss|json|yaml|yml|xml|md|markdown|txt|sh|bash|sql|vue|svelte|dart|ex|exs|lua|r|scala|tf|toml|ini|conf)$/i;
   const MAX_TEXT_FILE_BYTES = 200 * 1024;
   const PROMPT_TEXT_LIMIT = 10000;
-  const DEFAULT_TEMPERATURE_LABEL = '1.0';
+  const MAX_OUTPUT_TOKENS = 32768;
+  const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
   const REPRODUCIBLE_TEMPERATURE = 0;
   const REPRODUCIBLE_SEED = 42;
   const REPRODUCIBLE_TOP_K = 1;
   const REPRODUCIBLE_TOP_P = 1;
   const REPRODUCIBLE_CANDIDATE_COUNT = 1;
+  const OPENAI_REPRODUCIBLE_REASONING_EFFORT = 'none';
 
   /* ── DOM refs ───────────────────────────────────────── */
   const uploadArea   = document.getElementById('upload-area');
@@ -40,15 +46,19 @@
   const removeBtn    = document.getElementById('remove-file');
   const runBtn       = document.getElementById('run-btn');
   const apiKeyInput  = document.getElementById('api-key');
+  const apiKeyLabel  = document.getElementById('api-key-label');
+  const apiKeyHint   = document.getElementById('api-key-hint');
   const toggleKey    = document.getElementById('toggle-key');
   const modelSelect  = document.getElementById('model');
   const generationMode = document.getElementById('generation-mode');
   const generationModeValue = document.getElementById('generation-mode-value');
+  const generationModeHint = document.getElementById('generation-mode-hint');
 
   const diffEmpty    = document.getElementById('diff-empty');
   const diffViewer   = document.getElementById('diff-viewer');
   const reviewEmpty  = document.getElementById('review-empty');
   const reviewLoading= document.getElementById('review-loading');
+  const reviewLoadingText = document.getElementById('review-loading-text');
   const reviewResults= document.getElementById('review-results');
   const discussionEmpty = document.getElementById('discussion-empty');
   const discussionContent = document.getElementById('discussion-content');
@@ -121,8 +131,9 @@
     apiKeyInput.type = isPassword ? 'text' : 'password';
   });
 
+  modelSelect.addEventListener('change', updateProviderUi);
   generationMode.addEventListener('change', updateGenerationModeLabel);
-  updateGenerationModeLabel();
+  updateProviderUi();
 
   /* ── Drag & drop ────────────────────────────────────── */
   uploadArea.addEventListener('click', () => fileInput.click());
@@ -319,10 +330,21 @@
 
   function updateGenerationModeLabel () {
     const settings = getSelectedGenerationSettings();
+    const model = modelSelect.value;
+    const provider = getModelProvider(model);
+
     generationModeValue.textContent = settings.reproducible
-      ? `Best-effort reproducible (temperature ${settings.temperature}, seed ${settings.seed})`
-      : `Default (temperature ${DEFAULT_TEMPERATURE_LABEL}, random seed)`;
+      ? provider === 'openai'
+        ? `Best-effort deterministic (temperature ${settings.temperature}, top_p ${settings.topP}, reasoning ${OPENAI_REPRODUCIBLE_REASONING_EFFORT})`
+        : `Best-effort reproducible (temperature ${settings.temperature}, seed ${settings.seed})`
+      : `Default ${getProviderDisplayName(model)} parameters`;
     generationMode.setAttribute('aria-label', settings.reproducible ? 'Use default generation mode' : 'Use best-effort reproducible generation mode');
+
+    if (generationModeHint) {
+      generationModeHint.textContent = provider === 'openai'
+        ? 'When enabled, GPT-5.4 uses temperature 0, top_p 1, and reasoning effort none. OpenAI does not expose a seed parameter here, so exact repeatability is best-effort.'
+        : 'When enabled, Gemini uses temperature 0, seed 42, topK 1, topP 1, and one candidate. Gemini can still vary between runs.';
+    }
   }
 
   function applyGenerationSettings (generationConfig, settings) {
@@ -333,6 +355,43 @@
       generationConfig.topP = settings.topP;
       generationConfig.candidateCount = settings.candidateCount;
     }
+  }
+
+  function applyOpenAIGenerationSettings (body, settings) {
+    if (!settings?.reproducible) return;
+
+    body.temperature = settings.temperature;
+    body.top_p = settings.topP;
+    body.reasoning = { effort: OPENAI_REPRODUCIBLE_REASONING_EFFORT };
+    body.parallel_tool_calls = false;
+  }
+
+  function getModelProvider (model) {
+    return String(model || '').startsWith('gpt-') || String(model || '').startsWith('o') ? 'openai' : 'gemini';
+  }
+
+  function getProviderDisplayName (model) {
+    return getModelProvider(model) === 'openai' ? 'OpenAI' : 'Gemini';
+  }
+
+  function getModelDisplayName (model) {
+    const option = Array.from(modelSelect.options).find(item => item.value === model);
+    return option?.textContent?.trim() || model || 'AI';
+  }
+
+  function updateProviderUi () {
+    const model = modelSelect.value;
+    const provider = getModelProvider(model);
+
+    if (apiKeyLabel) apiKeyLabel.textContent = provider === 'openai' ? 'OpenAI API Key' : 'Google AI Studio API Key';
+    if (apiKeyHint) {
+      apiKeyHint.textContent = provider === 'openai'
+        ? 'Your OpenAI key is never stored by this app - used only in-session.'
+        : 'Your Google AI Studio key is never stored by this app - used only in-session.';
+    }
+    apiKeyInput.placeholder = provider === 'openai' ? 'sk-...' : 'AIza...';
+    if (reviewLoadingText) reviewLoadingText.textContent = `${getModelDisplayName(model)} is reviewing your code...`;
+    updateGenerationModeLabel();
   }
 
   function getSortedKeys (obj) {
@@ -346,6 +405,7 @@
       diffText = e.target.result;
       reviewData = null;
       reviewResponseText = '';
+      resetReviewAuditState();
       commentStatuses = {};
       resetDiscussionState();
       fileName.textContent = file.name;
@@ -361,6 +421,7 @@
     diffText        = '';
     reviewData      = null;
     reviewResponseText = '';
+    resetReviewAuditState();
     parsedDiffFiles = [];
     commentStatuses = {};
     repoFiles       = {};
@@ -639,7 +700,9 @@
     if (!apiKey || !diffText) return;
 
     const model = modelSelect.value;
+    const generationSettings = getSelectedGenerationSettings();
     reviewData = null;
+    resetReviewAuditState();
     commentStatuses = {};
     resetDiscussionState();
     reviewResponseText = '';
@@ -657,15 +720,29 @@
     runBtn.innerHTML = `<div class="spinner" style="width:16px;height:16px;border-width:2px;"></div> Analysing…`;
 
     try {
-      const response = await callGemini(apiKey, model, diffText, repoFiles, getSelectedGenerationSettings());
-      const parsed   = normalizeReviewData(parseGeminiResponse(response));
+      const response = await callReviewModel(apiKey, model, diffText, repoFiles, generationSettings);
+      let parsedResponse;
+      try {
+        parsedResponse = await parseModelJsonWithRepair(apiKey, model, response, buildReviewResponseSchema(), 'main review', generationSettings);
+      } catch (parseErr) {
+        const fallbackData = parseModelResponse(response.text);
+        fallbackData.summary = `${fallbackData.summary} ${parseErr?.message || ''}`.trim();
+        parsedResponse = {
+          data: fallbackData,
+          text: response.text,
+          repaired: false,
+          parseError: parseErr
+        };
+      }
+      const parsed   = normalizeReviewData(parsedResponse.data);
       commentStatuses = {};
-      reviewResponseText = response;
+      reviewResponseText = parsedResponse.text;
       reviewData     = parsed;
       renderDiff(diffText, { preserveTab: true });
       renderDiscussion(parsed);
       renderReview(parsed);
       renderSummary(parsed);
+      await rerunReviewAudit({ skipInitialRender: true });
     } catch (err) {
       showReviewError(err);
     } finally {
@@ -676,6 +753,164 @@
   }
 
   /* ── Gemini API call ────────────────────────────────── */
+  async function callReviewModel (apiKey, model, diff, fullFiles = {}, generationSettings = { reproducible: false }) {
+    return getModelProvider(model) === 'openai'
+      ? callOpenAIReview(apiKey, model, diff, fullFiles, generationSettings)
+      : callGemini(apiKey, model, diff, fullFiles, generationSettings);
+  }
+
+  async function callReviewAuditModel (apiKey, model, diff, fullFiles, review, generationSettings = { reproducible: false }) {
+    return getModelProvider(model) === 'openai'
+      ? callOpenAIReviewAudit(apiKey, model, diff, fullFiles, review, generationSettings)
+      : callGeminiReviewAudit(apiKey, model, diff, fullFiles, review, generationSettings);
+  }
+
+  async function callDiscussionModel (apiKey, model, history, generationSettings = { reproducible: false }) {
+    return getModelProvider(model) === 'openai'
+      ? callOpenAIDiscussion(apiKey, model, history, generationSettings)
+      : callGeminiDiscussion(apiKey, model, history, generationSettings);
+  }
+
+  async function callJsonRepairModel (apiKey, model, malformedText, schema, label, generationSettings = { reproducible: false }, responseMeta = {}) {
+    return getModelProvider(model) === 'openai'
+      ? callOpenAIJsonRepair(apiKey, model, malformedText, schema, label, generationSettings, responseMeta)
+      : callGeminiJsonRepair(apiKey, model, malformedText, schema, label, generationSettings, responseMeta);
+  }
+
+  async function callOpenAIReview (apiKey, model, diff, fullFiles = {}, generationSettings = { reproducible: false }) {
+    const truncated = diff.length > 30000 ? diff.slice(0, 30000) + '\n\n[... diff truncated for length ...]' : diff;
+    const body = buildOpenAIRequestBody(model, buildReviewSystemInstruction(), buildPrompt(truncated, fullFiles), generationSettings, {
+      name: 'code_review_response',
+      schema: buildReviewResponseSchema()
+    });
+
+    const data = await postOpenAIResponse(apiKey, body, model);
+    return extractOpenAITextResponse(data, 'OpenAI returned an empty response.');
+  }
+
+  async function callOpenAIReviewAudit (apiKey, model, diff, fullFiles, review, generationSettings = { reproducible: false }) {
+    const truncated = diff.length > 30000 ? diff.slice(0, 30000) + '\n\n[... diff truncated for length ...]' : diff;
+    const body = buildOpenAIRequestBody(model, buildReviewAuditSystemInstruction(), buildReviewAuditPrompt(truncated, fullFiles, review), generationSettings, {
+      name: 'review_audit_response',
+      schema: buildReviewAuditResponseSchema()
+    });
+
+    const data = await postOpenAIResponse(apiKey, body, model);
+    return extractOpenAITextResponse(data, 'OpenAI returned an empty review QA response.');
+  }
+
+  async function callOpenAIDiscussion (apiKey, model, history, generationSettings = { reproducible: false }) {
+    const body = buildOpenAIRequestBody(
+      model,
+      buildDiscussionSystemInstruction(),
+      [
+        {
+          role: 'user',
+          content: buildDiscussionContextPrompt()
+        },
+        {
+          role: 'assistant',
+          content: 'Context loaded. I will answer follow-up questions about the review using the code, diff, prior review, and earlier chat turns.'
+        },
+        ...history.map(message => ({
+          role: message.role === 'assistant' ? 'assistant' : 'user',
+          content: message.content
+        }))
+      ],
+      generationSettings
+    );
+
+    const data = await postOpenAIResponse(apiKey, body, model);
+    return extractOpenAITextResponse(data, 'OpenAI returned an empty discussion response.').text;
+  }
+
+  async function callOpenAIJsonRepair (apiKey, model, malformedText, schema, label, generationSettings = { reproducible: false }, responseMeta = {}) {
+    const body = buildOpenAIRequestBody(model, buildJsonRepairSystemInstruction(), buildJsonRepairPrompt(malformedText, label, responseMeta), generationSettings, {
+      name: 'json_repair_response',
+      schema
+    });
+
+    const data = await postOpenAIResponse(apiKey, body, model);
+    return extractOpenAITextResponse(data, `OpenAI returned an empty repaired ${label} response.`);
+  }
+
+  function buildOpenAIRequestBody (model, instructions, input, generationSettings, structuredOutput = null) {
+    const body = {
+      model,
+      instructions,
+      input,
+      max_output_tokens: MAX_OUTPUT_TOKENS
+    };
+
+    if (structuredOutput) {
+      body.text = {
+        format: {
+          type: 'json_schema',
+          name: structuredOutput.name,
+          schema: structuredOutput.schema,
+          strict: true
+        }
+      };
+    }
+
+    applyOpenAIGenerationSettings(body, generationSettings);
+    return body;
+  }
+
+  async function postOpenAIResponse (apiKey, body, model) {
+    const res = await fetch(OPENAI_RESPONSES_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(body)
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      throw createStructuredApiError(data?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
+    }
+
+    if (data?.error?.message) {
+      throw createStructuredApiError(data.error.message, getProviderDisplayName(model));
+    }
+
+    return data;
+  }
+
+  function extractOpenAITextResponse (data, emptyMessage) {
+    const outputItems = Array.isArray(data?.output) ? data.output : [];
+    const contentParts = outputItems.flatMap(item => item?.content || []);
+    const text = (data?.output_text || contentParts
+      .filter(part => part?.type === 'output_text')
+      .map(part => part.text || '')
+      .join('')).trim();
+    const refusal = contentParts.find(part => part?.type === 'refusal')?.refusal;
+    const incompleteReason = data?.incomplete_details?.reason || '';
+    const stoppedEarly = incompleteReason === 'max_output_tokens';
+
+    if (refusal) {
+      throw createStructuredApiError(`OpenAI refused the request: ${refusal}`, 'OpenAI');
+    }
+
+    if (!text) {
+      const reason = incompleteReason ? ` Incomplete reason: ${incompleteReason}.` : '';
+      throw new Error(`${emptyMessage}${reason}`);
+    }
+
+    return {
+      text,
+      finishReason: incompleteReason || data?.status || '',
+      response: data,
+      stoppedEarly,
+      stopMessage: stoppedEarly
+        ? 'OpenAI stopped early because max_output_tokens was reached, so the JSON may be incomplete. Try fewer uploaded files or a smaller diff if repair fails.'
+        : ''
+    };
+  }
+
   async function callGemini (apiKey, model, diff, fullFiles = {}, generationSettings = { reproducible: false }) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
@@ -692,7 +927,7 @@
         parts: [{ text: prompt }]
       }],
       generationConfig: {
-        maxOutputTokens: 16384, // 8192
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         responseMimeType: 'application/json',
         responseJsonSchema: buildReviewResponseSchema()
       }
@@ -708,13 +943,47 @@
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`);
+      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
     }
 
     const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error('Gemini returned an empty response.');
-    return text;
+    return extractGeminiTextResponse(data, 'Gemini returned an empty response.');
+  }
+
+  async function callGeminiReviewAudit (apiKey, model, diff, fullFiles, review, generationSettings = { reproducible: false }) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const truncated = diff.length > 30000 ? diff.slice(0, 30000) + '\n\n[... diff truncated for length ...]' : diff;
+
+    const body = {
+      system_instruction: {
+        parts: [{ text: buildReviewAuditSystemInstruction() }]
+      },
+      contents: [{
+        role: 'user',
+        parts: [{ text: buildReviewAuditPrompt(truncated, fullFiles, review) }]
+      }],
+      generationConfig: {
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        responseMimeType: 'application/json',
+        responseJsonSchema: buildReviewAuditResponseSchema()
+      }
+    };
+
+    applyGenerationSettings(body.generationConfig, generationSettings);
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
+    }
+
+    const data = await res.json();
+    return extractGeminiTextResponse(data, 'Gemini returned an empty review QA response.');
   }
 
   async function callGeminiDiscussion (apiKey, model, history, generationSettings = { reproducible: false }) {
@@ -738,7 +1007,7 @@
         }))
       ],
       generationConfig: {
-        maxOutputTokens: 4096
+        maxOutputTokens: MAX_OUTPUT_TOKENS
       }
     };
 
@@ -752,13 +1021,72 @@
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`);
+      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
     }
 
     const data = await res.json();
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) throw new Error('Gemini returned an empty discussion response.');
     return text.trim();
+  }
+
+  async function callGeminiJsonRepair (apiKey, model, malformedText, schema, label, generationSettings = { reproducible: false }, responseMeta = {}) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const body = {
+      system_instruction: {
+        parts: [{ text: buildJsonRepairSystemInstruction() }]
+      },
+      contents: [{
+        role: 'user',
+        parts: [{ text: buildJsonRepairPrompt(malformedText, label, responseMeta) }]
+      }],
+      generationConfig: {
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        responseMimeType: 'application/json',
+        responseJsonSchema: schema
+      }
+    };
+
+    applyGenerationSettings(body.generationConfig, generationSettings);
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
+    }
+
+    const data = await res.json();
+    return extractGeminiTextResponse(data, `Gemini returned an empty repaired ${label} response.`);
+  }
+
+  function extractGeminiTextResponse (data, emptyMessage) {
+    const candidate = data?.candidates?.[0] || null;
+    const finishReason = candidate?.finishReason || '';
+    const text = (candidate?.content?.parts || [])
+      .map(part => part?.text || '')
+      .join('')
+      .trim();
+    const stoppedEarly = finishReason === 'MAX_TOKENS';
+
+    if (!text) {
+      const reason = finishReason ? ` Finish reason: ${finishReason}.` : '';
+      throw new Error(`${emptyMessage}${reason}`);
+    }
+
+    return {
+      text,
+      finishReason,
+      candidate,
+      stoppedEarly,
+      stopMessage: stoppedEarly
+        ? 'Gemini stopped early with MAX_TOKENS, so the JSON may be incomplete. Try fewer uploaded files or a smaller diff if repair fails.'
+        : ''
+    };
   }
 
   function buildReviewResponseSchema () {
@@ -887,6 +1215,174 @@
       },
       required: ['verdict', 'summary', 'summary_bullets', 'stats', 'issues', 'discussion_questions', 'positives']
     };
+  }
+
+  function buildReviewAuditResponseSchema () {
+    const locationFields = {
+      file: {
+        type: 'string',
+        description: 'Path to the most relevant file, or an empty string if no file applies.'
+      },
+      line: {
+        type: ['integer', 'null'],
+        description: 'Most relevant line number in the diff, or null if no specific line applies.'
+      },
+      side: {
+        type: 'string',
+        enum: ['new', 'old'],
+        description: 'Use "new" for added/context lines and "old" for removed lines.'
+      }
+    };
+
+    const assessmentProperties = {
+      target_id: {
+        type: 'string',
+        description: 'ID of the reviewed issue or discussion question this assessment refers to.'
+      },
+      status: {
+        type: 'string',
+        enum: ['supported', 'uncertain', 'likely_false_positive'],
+        description: 'Whether the original review item is supported by the available evidence.'
+      },
+      confidence: {
+        type: 'string',
+        enum: ['high', 'medium', 'low'],
+        description: 'Confidence in this assessment.'
+      },
+      rationale: {
+        type: 'string',
+        description: 'Short explanation of why the item received this status.'
+      },
+      evidence_needed: {
+        type: 'string',
+        description: 'Extra code, runtime behavior, tests, or context needed to decide, or an empty string.'
+      },
+      suggested_action: {
+        type: 'string',
+        description: 'What the human reviewer should do next with this item.'
+      }
+    };
+
+    const missedFindingProperties = {
+      severity: {
+        type: 'string',
+        enum: ['critical', 'high', 'medium', 'low', 'info'],
+        description: 'Estimated severity of this possible missed finding.'
+      },
+      title: {
+        type: 'string',
+        description: 'Short title of the possible missed finding.'
+      },
+      ...locationFields,
+      description: {
+        type: 'string',
+        description: 'Concrete description of the possible missed risk.'
+      },
+      why_it_matters: {
+        type: 'string',
+        description: 'Practical risk or consequence if this possible issue is real.'
+      },
+      suggested_action: {
+        type: 'string',
+        description: 'Next verification or fix action for the human reviewer.'
+      },
+      learning_value: {
+        type: 'string',
+        description: 'What engineering concept this possible missed finding teaches.'
+      }
+    };
+
+    const learningFocusProperties = {
+      concept: {
+        type: 'string',
+        description: 'Engineering concept worth learning from this review.'
+      },
+      why_it_matters: {
+        type: 'string',
+        description: 'Why this concept matters in practical code review.'
+      },
+      practice_prompt: {
+        type: 'string',
+        description: 'Short exercise or reflection prompt for the learner.'
+      }
+    };
+
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        overall_confidence: {
+          type: 'string',
+          enum: ['high', 'medium', 'low'],
+          description: 'Confidence that the first review is useful and evidence-based.'
+        },
+        validation_summary: {
+          type: 'string',
+          description: 'Short summary of the second-pass validation.'
+        },
+        issue_assessments: {
+          type: 'array',
+          description: 'Assessments for concrete issues from the first review.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: assessmentProperties,
+            required: Object.keys(assessmentProperties)
+          }
+        },
+        discussion_assessments: {
+          type: 'array',
+          description: 'Assessments for discussion questions from the first review.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: assessmentProperties,
+            required: Object.keys(assessmentProperties)
+          }
+        },
+        missed_findings: {
+          type: 'array',
+          description: 'Possible findings the first review may have missed. These are advisory only.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: missedFindingProperties,
+            required: Object.keys(missedFindingProperties)
+          }
+        },
+        learning_focus: {
+          type: 'array',
+          description: 'Concepts and practice prompts that improve learning and knowledge transfer.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: learningFocusProperties,
+            required: Object.keys(learningFocusProperties)
+          }
+        }
+      },
+      required: ['overall_confidence', 'validation_summary', 'issue_assessments', 'discussion_assessments', 'missed_findings', 'learning_focus']
+    };
+  }
+
+  function buildReviewAuditSystemInstruction () {
+    return `You are a second-pass code review QA agent.
+
+Your job is to audit the first AI review, not replace it.
+Use the diff, uploaded source files, optional review documents, and the original structured review as evidence.
+Validate whether each concrete issue and discussion question is supported by the available code context.
+Flag likely false positives when the first review overclaims beyond the evidence.
+Identify important possible missed findings only when the diff or source context supports the risk.
+Highlight learning concepts that would help the developer improve future reviews.
+
+Rules:
+- Keep all output advisory. Do not rewrite or merge the original review.
+- Use the exact target_id values from the first review for issue and discussion assessments.
+- Prefer "uncertain" when more context is needed.
+- Do not invent project rules from optional documents alone.
+- Be concise and evidence-focused.
+
+${buildOptionalReviewDocumentSection()}`;
   }
 
   function buildIssueWritingStyleExamples () {
@@ -1048,8 +1544,55 @@ DIFF:
 ${diff}`;
   }
 
+  function buildReviewAuditPrompt (diff, fullFiles = {}, review = {}) {
+    const fileNames = getSortedKeys(fullFiles);
+    const codeSection = fileNames.length
+      ? fileNames.map(name => `\n### ${name}\n\`\`\`\n${truncatePromptText(fullFiles[name])}\n\`\`\``).join('\n')
+      : '\nNo full source files were uploaded. Use the diff below as the available code context.\n';
+
+    return `Audit this initial AI code review.
+
+INITIAL REVIEW JSON:
+\`\`\`json
+${JSON.stringify(review || {}, null, 2)}
+\`\`\`
+
+FULL SOURCE FILES:
+${codeSection}
+
+DIFF:
+\`\`\`
+${diff}
+\`\`\``;
+  }
+
+  function buildJsonRepairSystemInstruction () {
+    return `You repair malformed JSON produced by another AI response.
+
+Rules:
+- Only fix JSON syntax and schema shape.
+- Preserve the original generated review content as much as possible.
+- Do not perform a new review.
+- Do not invent new findings, facts, files, or line numbers.
+- Return only valid JSON matching the schema supplied with this request.`;
+  }
+
+  function buildJsonRepairPrompt (malformedText, label, responseMeta = {}) {
+    const meta = responseMeta?.finishReason
+      ? `Original model finish reason: ${responseMeta.finishReason}\n`
+      : '';
+
+    return `Repair this malformed ${label} JSON so it parses and matches the response schema.
+${meta}
+MALFORMED JSON:
+\`\`\`json
+${String(malformedText || '')}
+\`\`\``;
+  }
+
   function buildDiscussionContextPrompt () {
     const reviewJson = reviewResponseText || JSON.stringify(reviewData || {}, null, 2);
+    const auditJson = reviewAuditResponseText || (reviewAuditData ? JSON.stringify(reviewAuditData, null, 2) : '');
     const fileNames = getSortedKeys(repoFiles);
     const codeSection = fileNames.length
       ? fileNames.map(name => `\n### ${name}\n\`\`\`\n${truncatePromptText(repoFiles[name])}\n\`\`\``).join('\n')
@@ -1057,6 +1600,9 @@ ${diff}`;
 
     return `INITIAL CODE REVIEW RESPONSE:
 ${reviewJson}
+
+REVIEW QA AUDIT RESPONSE:
+${auditJson || 'No review QA audit is available yet.'}
 
 FULL SOURCE FILES:
 ${codeSection}
@@ -1068,7 +1614,7 @@ ${diffText}
   }
 
   /* ── Parse Gemini response ──────────────────────────── */
-  function parseGeminiResponse (text) {
+  function parseModelResponse (text) {
     // Strip possible markdown code fences
     let clean = text.trim();
     clean = clean.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
@@ -1081,7 +1627,7 @@ ${diffText}
         summary: 'The AI returned a response that could not be parsed as structured JSON. The raw response is shown below.',
         summary_bullets: ['The response could not be converted into the standard review format.'],
         stats: { files_changed: 0, lines_added: 0, lines_removed: 0, critical: 0, high: 0, medium: 0, low: 0, info: 1 },
-        issues: [{ severity: 'info', title: 'Raw Gemini Response', file: '', line: null, side: 'new', description: text, suggestion: '' }],
+        issues: [{ severity: 'info', title: 'Raw AI Response', file: '', line: null, side: 'new', description: text, suggestion: '' }],
         discussion_questions: [],
         positives: []
       };
@@ -1089,6 +1635,54 @@ ${diffText}
   }
 
   /* ── Render review ──────────────────────────────────── */
+  function parseModelJsonStrict (text) {
+    let clean = String(text || '').trim();
+    clean = clean.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    return JSON.parse(clean);
+  }
+
+  async function parseModelJsonWithRepair (apiKey, model, response, schema, label, generationSettings = { reproducible: false }) {
+    const text = typeof response === 'string' ? response : response?.text || '';
+    const responseMeta = typeof response === 'string' ? {} : response || {};
+
+    try {
+      return {
+        data: parseModelJsonStrict(text),
+        text,
+        repaired: false
+      };
+    } catch (parseErr) {
+      let repairResponse;
+      try {
+        repairResponse = await callJsonRepairModel(apiKey, model, text, schema, label, generationSettings, responseMeta);
+      } catch (repairErr) {
+        throw new Error(getJsonParseErrorMessage(repairErr, responseMeta, parseErr));
+      }
+      try {
+        return {
+          data: parseModelJsonStrict(repairResponse.text),
+          text: repairResponse.text,
+          repaired: true
+        };
+      } catch (repairParseErr) {
+        throw new Error(getJsonParseErrorMessage(repairParseErr, responseMeta, parseErr));
+      }
+    }
+  }
+
+  function getJsonParseErrorMessage (error, responseMeta = {}, originalError = null) {
+    const parts = [error?.message || 'The JSON response could not be parsed.'];
+    if (originalError?.message) {
+      parts.push(`Original parse error: ${originalError.message}`);
+    }
+    if (responseMeta?.finishReason === 'MAX_TOKENS' || responseMeta?.finishReason === 'max_output_tokens') {
+      parts.push('The model stopped early because the max output token limit was reached, so the JSON was likely incomplete. Try fewer uploaded files or a smaller diff if this continues.');
+    } else if (responseMeta?.finishReason) {
+      parts.push(`Model finish reason: ${responseMeta.finishReason}.`);
+    }
+    return parts.join(' ');
+  }
+
   function renderReview (data) {
     reviewLoading.style.display = 'none';
     reviewResults.innerHTML = '';
@@ -1108,6 +1702,11 @@ ${diffText}
     reviewResults.appendChild(banner);
 
     reviewResults.appendChild(buildStandardReviewCard(data));
+    const auditStatusCard = buildReviewAuditStatusCard();
+    if (auditStatusCard) {
+      reviewResults.appendChild(auditStatusCard);
+      bindReviewAuditActions(auditStatusCard);
+    }
 
     const issuesTitle = document.createElement('p');
     issuesTitle.className = 'review-section-title';
@@ -1179,8 +1778,14 @@ ${diffText}
     const statusText = discussionError
       ? `Discussion error: ${discussionError}`
       : discussionPending
-        ? 'Gemini is replying with the current review context.'
-        : 'Context includes the uploaded code, optional review documents, diff, initial review response, and earlier chat turns.';
+        ? `${getProviderDisplayName(modelSelect.value)} is replying with the current review context.`
+        : reviewAuditData
+          ? 'Context includes the uploaded code, optional review documents, diff, initial review, Review QA audit, and earlier chat turns.'
+          : reviewAuditPending
+            ? 'Context includes the initial review. The Review QA audit is still running.'
+            : reviewAuditError
+              ? `Context includes the initial review. Review QA failed: ${reviewAuditError}`
+              : 'Context includes the uploaded code, optional review documents, diff, initial review response, and earlier chat turns.';
 
     discussionStatus.textContent = statusText;
     floatingChatStatus.textContent = statusText;
@@ -1208,10 +1813,10 @@ ${diffText}
     renderDiscussion(reviewData);
 
     try {
-      const reply = await callGeminiDiscussion(apiKey, modelSelect.value, discussionMessages, getSelectedGenerationSettings());
+      const reply = await callDiscussionModel(apiKey, modelSelect.value, discussionMessages, getSelectedGenerationSettings());
       discussionMessages.push({ role: 'assistant', content: reply });
     } catch (err) {
-      discussionError = err.message || 'Unknown error from Gemini API';
+      discussionError = err.message || `Unknown error from ${getProviderDisplayName(modelSelect.value)} API`;
     } finally {
       discussionPending = false;
       renderDiscussion(reviewData);
@@ -1310,6 +1915,55 @@ ${diffText}
     floatingChatInput.value = '';
   }
 
+  function resetReviewAuditState () {
+    reviewAuditData = null;
+    reviewAuditResponseText = '';
+    reviewAuditPending = false;
+    reviewAuditError = '';
+  }
+
+  async function rerunReviewAudit (options = {}) {
+    if (!reviewData || !diffText || reviewAuditPending) return;
+
+    const apiKey = apiKeyInput.value.trim();
+    if (!apiKey) {
+      reviewAuditError = 'Enter an API key before rerunning Review QA.';
+      rerenderAnalysisViews();
+      return;
+    }
+
+    reviewAuditPending = true;
+    reviewAuditError = '';
+    if (!options.skipInitialRender) rerenderAnalysisViews();
+
+    try {
+      const auditResponse = await callReviewAuditModel(
+        apiKey,
+        modelSelect.value,
+        diffText,
+        repoFiles,
+        reviewData,
+        getSelectedGenerationSettings()
+      );
+      const parsedAudit = await parseModelJsonWithRepair(
+        apiKey,
+        modelSelect.value,
+        auditResponse,
+        buildReviewAuditResponseSchema(),
+        'review QA audit',
+        getSelectedGenerationSettings()
+      );
+      reviewAuditResponseText = parsedAudit.text;
+      reviewAuditData = normalizeReviewAuditData(parsedAudit.data);
+      reviewAuditError = '';
+    } catch (auditErr) {
+      reviewAuditError = auditErr?.message || 'Review QA pass failed.';
+    } finally {
+      reviewAuditPending = false;
+      rerenderAnalysisViews();
+    }
+  }
+
   function getDiscussionSuggestions (data) {
     if (!data) return [];
 
@@ -1318,11 +1972,18 @@ ${diffText}
       .filter(Boolean);
     const visibleIssues = getVisibleIssues(data.issues || []);
     const pedagogicalIssue = visibleIssues.find(item => item.concept_to_learn);
+    const uncertainAssessment = (reviewAuditData?.issue_assessments || [])
+      .find(item => item.status === 'uncertain' || item.status === 'likely_false_positive');
+    const missedFinding = (reviewAuditData?.missed_findings || [])[0];
+    const learningFocus = (reviewAuditData?.learning_focus || [])[0];
     const issues = visibleIssues
       .slice(0, 2)
       .map(item => `How would you fix "${item.title}" in ${formatLocation(item) || 'this change'}?`);
 
     return [...new Set([
+      uncertainAssessment ? `Why did Review QA mark ${formatAuditTargetLabel(uncertainAssessment.target_id)} as ${formatAuditStatus(uncertainAssessment.status)}?` : '',
+      missedFinding ? `Teach me the missed risk "${missedFinding.title}".` : '',
+      learningFocus ? `Give me a short exercise for "${learningFocus.concept}".` : '',
       pedagogicalIssue ? `Explain the principle behind "${pedagogicalIssue.title}" in simpler terms.` : '',
       ...questions.slice(0, 3),
       ...issues
@@ -1341,6 +2002,7 @@ ${diffText}
     card.className = 'review-issue';
 
     const sev = (issue.severity || 'info').toLowerCase();
+    const audit = getIssueAuditAssessment(issue);
     const desc = renderInlineMarkup(issue.description || '').replace(
       /\[Limited context\]/g,
       '<span class="limited-ctx-tag">[Limited context]</span>'
@@ -1348,6 +2010,7 @@ ${diffText}
     card.innerHTML = `
       <div class="review-issue-header">
         <span class="severity-badge severity-${sev}">${sev}</span>
+        ${audit ? renderAuditBadge(audit) : ''}
         <div style="flex:1;min-width:0;">
           <div class="issue-title">${escHtml(issue.title || 'Issue')}</div>
           ${formatLocation(issue) ? `<div class="issue-file">${escHtml(formatLocation(issue))}</div>` : ''}
@@ -1355,6 +2018,7 @@ ${diffText}
       </div>
       <div class="review-issue-body">
         <p>${desc}</p>
+        ${audit ? renderAuditNote(audit) : ''}
         ${renderLearningFields(issue)}
         ${issue.suggestion ? `<p class="review-section-title" style="margin-top:10px;">Suggestion</p><pre>${escHtml(issue.suggestion)}</pre>` : ''}
       </div>`;
@@ -1404,18 +2068,215 @@ ${diffText}
     return card;
   }
 
+  function buildReviewAuditStatusCard () {
+    if (!reviewAuditPending && !reviewAuditError && !reviewAuditData) return null;
+
+    const card = document.createElement('div');
+    card.className = 'review-block review-audit-card';
+    const statusClass = reviewAuditError ? 'audit-status-error' : reviewAuditPending ? 'audit-status-pending' : `audit-status-${reviewAuditData.overall_confidence}`;
+    const statusText = reviewAuditError
+      ? 'QA failed'
+      : reviewAuditPending
+        ? 'QA running'
+        : `QA confidence: ${formatAuditConfidence(reviewAuditData.overall_confidence)}`;
+    const summary = reviewAuditError
+      ? `The first review is still available. Review QA failed: ${reviewAuditError}`
+      : reviewAuditPending
+        ? 'The initial review is ready. A second AI pass is validating findings and checking for missed risks.'
+        : reviewAuditData.validation_summary || 'The second-pass audit finished.';
+
+    card.innerHTML = `
+      <div class="review-audit-header">
+        <div>
+          <p class="review-kicker">Review QA</p>
+          <h3 class="review-block-title">Second-pass validation</h3>
+        </div>
+        <div class="review-audit-actions">
+          <span class="audit-badge ${statusClass}">${escHtml(statusText)}</span>
+          ${renderReviewAuditRerunButton()}
+        </div>
+      </div>
+      <p class="review-block-copy">${renderInlineMarkup(summary)}</p>
+    `;
+    return card;
+  }
+
+  function renderReviewAuditRerunButton () {
+    if (!reviewData) return '';
+    return `<button class="audit-rerun-btn" type="button" data-review-audit-rerun="true" ${reviewAuditPending ? 'disabled' : ''}>${reviewAuditPending ? 'Running Review QA...' : 'Rerun Review QA'}</button>`;
+  }
+
+  function bindReviewAuditActions (root) {
+    root.querySelectorAll('[data-review-audit-rerun="true"]').forEach(button => {
+      button.addEventListener('click', () => rerunReviewAudit());
+    });
+  }
+
+  function renderAuditBadge (audit) {
+    return `<span class="audit-badge audit-status-${escHtml(audit.status)}">${escHtml(formatAuditStatus(audit.status))}</span>`;
+  }
+
+  function renderAuditNote (audit) {
+    const details = [
+      audit.rationale ? `<p>${renderInlineMarkup(audit.rationale)}</p>` : '',
+      audit.evidence_needed ? `<p><strong>Evidence needed:</strong> ${renderInlineMarkup(audit.evidence_needed)}</p>` : '',
+      audit.suggested_action ? `<p><strong>Suggested action:</strong> ${renderInlineMarkup(audit.suggested_action)}</p>` : ''
+    ].filter(Boolean).join('');
+
+    if (!details) return '';
+
+    return `
+      <div class="audit-note audit-note-${escHtml(audit.status)}">
+        <div class="audit-note-header">
+          <span class="audit-badge audit-status-${escHtml(audit.status)}">${escHtml(formatAuditStatus(audit.status))}</span>
+          <span>${escHtml(formatAuditConfidence(audit.confidence))} confidence</span>
+        </div>
+        ${details}
+      </div>
+    `;
+  }
+
+  function renderReviewAuditSummaryHtml () {
+    if (!reviewAuditPending && !reviewAuditError && !reviewAuditData) return '';
+
+    if (reviewAuditPending) {
+      return `
+        <p class="review-section-title">Review QA</p>
+        <div class="summary-overview review-audit-card">
+          <div class="review-audit-header">
+            <h3>Second-pass validation</h3>
+            <div class="review-audit-actions">
+              <span class="audit-badge audit-status-pending">QA running</span>
+              ${renderReviewAuditRerunButton()}
+            </div>
+          </div>
+          <p>The initial review is ready. The advisory QA pass is checking findings, false positives, missed risks, and learning focus.</p>
+        </div>
+      `;
+    }
+
+    if (reviewAuditError) {
+      return `
+        <p class="review-section-title">Review QA</p>
+        <div class="summary-overview review-audit-card">
+          <div class="review-audit-header">
+            <h3>Second-pass validation</h3>
+            <div class="review-audit-actions">
+              <span class="audit-badge audit-status-error">QA failed</span>
+              ${renderReviewAuditRerunButton()}
+            </div>
+          </div>
+          <p>The first review is still available. Review QA failed: ${escHtml(reviewAuditError)}</p>
+        </div>
+      `;
+    }
+
+    const supported = (reviewAuditData.issue_assessments || []).filter(item => item.status === 'supported').length;
+    const uncertain = (reviewAuditData.issue_assessments || []).filter(item => item.status === 'uncertain').length;
+    const falsePositive = (reviewAuditData.issue_assessments || []).filter(item => item.status === 'likely_false_positive').length;
+
+    return `
+      <p class="review-section-title">Review QA</p>
+      <div class="summary-overview review-audit-card">
+        <div class="review-audit-header">
+          <h3>Second-pass validation</h3>
+          <div class="review-audit-actions">
+            <span class="audit-badge audit-status-${escHtml(reviewAuditData.overall_confidence)}">${escHtml(formatAuditConfidence(reviewAuditData.overall_confidence))} confidence</span>
+            ${renderReviewAuditRerunButton()}
+          </div>
+        </div>
+        ${reviewAuditData.validation_summary ? `<p>${renderInlineMarkup(reviewAuditData.validation_summary)}</p>` : ''}
+        <div class="audit-breakdown">
+          <span>QA validated: ${supported}</span>
+          <span>QA uncertain: ${uncertain}</span>
+          <span>QA flagged false positives: ${falsePositive}</span>
+          <span>Missed suggestions: ${(reviewAuditData.missed_findings || []).length}</span>
+        </div>
+      </div>
+      ${renderMissedFindingsHtml(reviewAuditData.missed_findings || [])}
+      ${renderLearningFocusHtml(reviewAuditData.learning_focus || [])}
+    `;
+  }
+
+  function renderMissedFindingsHtml (items) {
+    if (!items.length) return '';
+    return `
+      <p class="review-section-title">AI Second-pass Suggestions</p>
+      <div class="audit-list">
+        ${items.map(item => `
+          <article class="audit-list-item">
+            <div class="audit-list-header">
+              <span class="severity-badge severity-${escHtml(item.severity)}">${escHtml(item.severity)}</span>
+              <strong>${renderInlineMarkup(item.title || 'Possible missed finding')}</strong>
+            </div>
+            ${formatLocation(item) ? `<div class="issue-file">${escHtml(formatLocation(item))}</div>` : ''}
+            ${item.description ? `<p>${renderInlineMarkup(item.description)}</p>` : ''}
+            ${item.why_it_matters ? `<p><strong>Why it matters:</strong> ${renderInlineMarkup(item.why_it_matters)}</p>` : ''}
+            ${item.suggested_action ? `<p><strong>Suggested action:</strong> ${renderInlineMarkup(item.suggested_action)}</p>` : ''}
+            ${item.learning_value ? `<p><strong>Learning value:</strong> ${renderInlineMarkup(item.learning_value)}</p>` : ''}
+          </article>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderLearningFocusHtml (items) {
+    if (!items.length) return '';
+    return `
+      <p class="review-section-title">Learning Focus from QA</p>
+      <div class="audit-list">
+        ${items.map(item => `
+          <article class="audit-list-item audit-learning-item">
+            <strong>${renderInlineMarkup(item.concept || 'Learning focus')}</strong>
+            ${item.why_it_matters ? `<p>${renderInlineMarkup(item.why_it_matters)}</p>` : ''}
+            ${item.practice_prompt ? `<p><strong>Practice:</strong> ${renderInlineMarkup(item.practice_prompt)}</p>` : ''}
+          </article>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function getIssueAuditAssessment (issue) {
+    return (reviewAuditData?.issue_assessments || []).find(item => item.target_id === issue?.id) || null;
+  }
+
+  function getDiscussionAuditAssessment (item) {
+    return (reviewAuditData?.discussion_assessments || []).find(audit => audit.target_id === item?.id) || null;
+  }
+
+  function formatAuditStatus (status) {
+    const labels = {
+      supported: 'QA validated',
+      uncertain: 'QA uncertain',
+      likely_false_positive: 'QA flagged false positive'
+    };
+    return labels[status] || 'QA uncertain';
+  }
+
+  function formatAuditConfidence (confidence) {
+    const labels = { high: 'High', medium: 'Medium', low: 'Low' };
+    return labels[confidence] || 'Medium';
+  }
+
+  function formatAuditTargetLabel (targetId) {
+    return targetId ? `item ${targetId}` : 'this item';
+  }
+
   function buildDiscussionQuestionCard (item, index) {
     const card = document.createElement('div');
     card.className = 'discussion-question';
+    const audit = getDiscussionAuditAssessment(item);
     card.innerHTML = `
       <div class="discussion-question-header">
         <span class="discussion-index">Q${index + 1}</span>
+        ${audit ? renderAuditBadge(audit) : ''}
         <div style="flex:1;min-width:0;">
           <div class="discussion-title">${renderInlineMarkup(item.question || 'Discussion question')}</div>
           ${formatLocation(item) ? `<div class="issue-file">${escHtml(formatLocation(item))}</div>` : ''}
         </div>
       </div>
       <div class="discussion-body">
+        ${audit ? renderAuditNote(audit) : ''}
         ${item.context ? `<p>${renderInlineMarkup(item.context)}</p>` : ''}
       </div>
     `;
@@ -1461,6 +2322,8 @@ ${diffText}
         ${renderKeyLessonsHtml(keyLessons)}
       </div>
 
+      ${renderReviewAuditSummaryHtml()}
+
       <p class="review-section-title">Review Breakdown</p>
       <div class="summary-grid">
         <div class="stat-card stat-critical">
@@ -1501,13 +2364,14 @@ ${diffText}
         </div>
       </div>
     `;
+    bindReviewAuditActions(summaryContent);
 
     summaryContent.style.display = 'block';
   }
 
   /* ── Error display ──────────────────────────────────── */
   function showReviewError (error) {
-    const userMessage = error?.userMessage || error?.message || 'Unknown error from Gemini API';
+    const userMessage = error?.userMessage || error?.message || `Unknown error from ${getProviderDisplayName(modelSelect.value)} API`;
     const apiMessage = error?.apiMessage || error?.message || '';
 
     reviewLoading.style.display = 'none';
@@ -1528,7 +2392,7 @@ ${diffText}
         <div>
           <strong>API Error</strong><br/>
           ${escHtml(userMessage)}<br/>
-          <span style="font-size:12px;opacity:.8;">Check your API key, model selection, and ensure the Gemini API is enabled in Google AI Studio.</span>
+          <span style="font-size:12px;opacity:.8;">${escHtml(getSelectedProviderTroubleshootingHint())}</span>
         </div>
       </div>
       ${apiMessage ? `
@@ -1541,11 +2405,17 @@ ${diffText}
     syncDiscussionComposerState();
   }
 
-  function createStructuredApiError (message) {
-    const error = new Error(message || 'Unknown error from Gemini API');
+  function createStructuredApiError (message, providerName = 'AI') {
+    const error = new Error(message || `Unknown error from ${providerName} API`);
     error.apiMessage = message || '';
-    error.userMessage = message || 'Unknown error from Gemini API';
+    error.userMessage = message || `Unknown error from ${providerName} API`;
     return error;
+  }
+
+  function getSelectedProviderTroubleshootingHint () {
+    return getModelProvider(modelSelect.value) === 'openai'
+      ? 'Check your API key, model selection, and whether your OpenAI account has access to GPT-5.4.'
+      : 'Check your API key, model selection, and ensure the Gemini API is enabled in Google AI Studio.';
   }
 
   /* ── Helpers ────────────────────────────────────────── */
@@ -1720,6 +2590,7 @@ ${diffText}
 
   function buildIssueFollowUpPrompt (issue) {
     const location = formatLocation(issue) || 'No file/line provided';
+    const audit = getIssueAuditAssessment(issue);
     const parts = [
       'Review this concrete issue from the PR review and help me reason about it.',
       '',
@@ -1731,6 +2602,16 @@ ${diffText}
 
     if (issue.suggestion) {
       parts.push(`Suggested fix from the review: ${issue.suggestion}`);
+    }
+
+    if (audit) {
+      parts.push(
+        '',
+        `Review QA status: ${formatAuditStatus(audit.status)} (${formatAuditConfidence(audit.confidence)} confidence)`,
+        `Review QA rationale: ${audit.rationale || 'No rationale provided.'}`
+      );
+      if (audit.evidence_needed) parts.push(`Evidence needed: ${audit.evidence_needed}`);
+      if (audit.suggested_action) parts.push(`Review QA suggested action: ${audit.suggested_action}`);
     }
 
     parts.push(
@@ -1927,6 +2808,68 @@ ${diffText}
       discussion_questions: discussionQuestions,
       positives: Array.isArray(review.positives) ? review.positives : []
     };
+  }
+
+  function normalizeReviewAuditData (data) {
+    const audit = data && typeof data === 'object' ? data : {};
+    return {
+      overall_confidence: normalizeAuditConfidence(audit.overall_confidence),
+      validation_summary: String(audit.validation_summary || '').trim(),
+      issue_assessments: normalizeAuditAssessments(audit.issue_assessments),
+      discussion_assessments: normalizeAuditAssessments(audit.discussion_assessments),
+      missed_findings: Array.isArray(audit.missed_findings)
+        ? audit.missed_findings.map(normalizeMissedFinding).filter(item => item.title || item.description)
+        : [],
+      learning_focus: Array.isArray(audit.learning_focus)
+        ? audit.learning_focus.map(item => ({
+          concept: String(item?.concept || '').trim(),
+          why_it_matters: String(item?.why_it_matters || '').trim(),
+          practice_prompt: String(item?.practice_prompt || '').trim()
+        })).filter(item => item.concept || item.why_it_matters || item.practice_prompt)
+        : []
+    };
+  }
+
+  function normalizeAuditAssessments (items) {
+    return Array.isArray(items)
+      ? items.map(item => ({
+        target_id: String(item?.target_id || '').trim(),
+        status: normalizeAuditStatus(item?.status),
+        confidence: normalizeAuditConfidence(item?.confidence),
+        rationale: String(item?.rationale || '').trim(),
+        evidence_needed: String(item?.evidence_needed || '').trim(),
+        suggested_action: String(item?.suggested_action || '').trim()
+      })).filter(item => item.target_id)
+      : [];
+  }
+
+  function normalizeMissedFinding (item) {
+    return {
+      severity: normalizeSeverity(item?.severity),
+      title: String(item?.title || '').trim(),
+      file: String(item?.file || '').trim(),
+      line: normalizeLineNumber(item?.line),
+      side: normalizeDiffSide(item?.side),
+      description: String(item?.description || '').trim(),
+      why_it_matters: String(item?.why_it_matters || '').trim(),
+      suggested_action: String(item?.suggested_action || '').trim(),
+      learning_value: String(item?.learning_value || '').trim()
+    };
+  }
+
+  function normalizeAuditStatus (value) {
+    const status = String(value || '').toLowerCase();
+    return ['supported', 'uncertain', 'likely_false_positive'].includes(status) ? status : 'uncertain';
+  }
+
+  function normalizeAuditConfidence (value) {
+    const confidence = String(value || '').toLowerCase();
+    return ['high', 'medium', 'low'].includes(confidence) ? confidence : 'medium';
+  }
+
+  function normalizeSeverity (value) {
+    const severity = String(value || '').toLowerCase();
+    return ['critical', 'high', 'medium', 'low', 'info'].includes(severity) ? severity : 'info';
   }
 
   function normalizeDiscussionQuestion (item, index = 0) {

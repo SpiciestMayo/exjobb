@@ -111,7 +111,7 @@
                     <li>Click the <strong>Raw</strong> button.</li>
                     <li>Save the page (<kbd>Ctrl+S</kbd> / <kbd>Cmd+S</kbd>).</li>
                   </ul>
-                  <p class="how-note">Alternatively, clone the repo locally and upload the files directly from your machine. The more source files you upload, the more context Gemini has.</p>
+                  <p class="how-note">Alternatively, clone the repo locally and upload the files directly from your machine. The more source files you upload, the more context the selected AI model has.</p>
                   <div class="code-example">git clone https://github.com/owner/repo.git<br>cd repo &amp;&amp; git checkout &lt;pr-branch&gt;</div>
                 </div>
               </div>
@@ -137,28 +137,33 @@
 
           <label class="form-label" style="margin-top:14px;">Model</label>
           <select class="form-select" id="model">
-            <option value="gemini-3-flash-preview" selected>Gemini 3 Flash Preview</option>
-            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+            <optgroup label="OpenAI">
+              <option value="gpt-5.4" selected>GPT-5.4</option>
+            </optgroup>
+            <optgroup label="Google Gemini">
+              <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+              <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+            </optgroup>
           </select>
 
           <label class="form-label" style="margin-top:14px;">Generation Mode</label>
           <label class="generation-mode-control">
             <span class="generation-mode-copy">
-              <span id="generation-mode-value" class="generation-mode-value">Default (temperature 1.0, random seed)</span>
+              <span id="generation-mode-value" class="generation-mode-value">Default OpenAI parameters</span>
             </span>
             <input id="generation-mode" class="generation-mode-input" type="checkbox" aria-label="Use best-effort reproducible generation mode" />
             <span class="generation-mode-switch" aria-hidden="true"></span>
           </label>
-          <p class="hint-text">Uses temperature 0, seed 42, topK 1, topP 1, and one candidate. Gemini can still vary between runs.</p>
+          <p class="hint-text" id="generation-mode-hint">When enabled, GPT-5.4 uses temperature 0, top_p 1, and reasoning effort none. OpenAI does not expose a seed parameter here, so exact repeatability is best-effort.</p>
 
-          <label class="form-label" style="margin-top:14px;">Google AI Studio API Key</label>
+          <label class="form-label" style="margin-top:14px;" id="api-key-label">OpenAI API Key</label>
           <div class="api-key-wrapper">
-            <input type="password" class="form-input" id="api-key" placeholder="AIza..." />
+            <input type="password" class="form-input" id="api-key" placeholder="sk-..." />
             <button class="btn-icon-inline" id="toggle-key" title="Show/hide key">
               <svg id="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
             </button>
           </div>
-          <p class="hint-text">Your key is never stored — used only in-session.</p>
+          <p class="hint-text" id="api-key-hint">Your OpenAI key is never stored by this app - used only in-session.</p>
         </section>
 
         <button class="btn btn-primary run-btn" id="run-btn" disabled>
@@ -195,7 +200,7 @@
           </div>
           <div id="review-loading" style="display:none;" class="loading-state">
             <div class="spinner"></div>
-            <p>Gemini is reviewing your code…</p>
+            <p id="review-loading-text">GPT-5.4 is reviewing your code...</p>
           </div>
           <div id="review-results" style="display:none;"></div>
         </div>
