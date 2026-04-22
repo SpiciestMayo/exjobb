@@ -149,12 +149,12 @@
           <label class="form-label" style="margin-top:14px;">Generation Mode</label>
           <label class="generation-mode-control">
             <span class="generation-mode-copy">
-              <span id="generation-mode-value" class="generation-mode-value">Default OpenAI parameters</span>
+              <span id="generation-mode-value" class="generation-mode-value">Default OpenAI parameters (reasoning xhigh)</span>
             </span>
             <input id="generation-mode" class="generation-mode-input" type="checkbox" aria-label="Use best-effort reproducible generation mode" />
             <span class="generation-mode-switch" aria-hidden="true"></span>
           </label>
-          <p class="hint-text" id="generation-mode-hint">When enabled, GPT-5.4 uses temperature 0, top_p 1, and reasoning effort none. OpenAI does not expose a seed parameter here, so exact repeatability is best-effort.</p>
+          <p class="hint-text" id="generation-mode-hint">When disabled, GPT-5.4 uses default sampling with reasoning effort xhigh.</p>
 
           <label class="form-label" style="margin-top:14px;" id="api-key-label">OpenAI API Key</label>
           <div class="api-key-wrapper">

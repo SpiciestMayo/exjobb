@@ -37,6 +37,7 @@
   const REPRODUCIBLE_TOP_P = 1;
   const REPRODUCIBLE_CANDIDATE_COUNT = 1;
   const OPENAI_REPRODUCIBLE_REASONING_EFFORT = 'none';
+  const OPENAI_NONDETERMINISTIC_REASONING_EFFORT = 'xhigh';
 
   /* ── DOM refs ───────────────────────────────────────── */
   const uploadArea   = document.getElementById('upload-area');
@@ -337,12 +338,16 @@
       ? provider === 'openai'
         ? `Best-effort deterministic (temperature ${settings.temperature}, top_p ${settings.topP}, reasoning ${OPENAI_REPRODUCIBLE_REASONING_EFFORT})`
         : `Best-effort reproducible (temperature ${settings.temperature}, seed ${settings.seed})`
-      : `Default ${getProviderDisplayName(model)} parameters`;
+      : provider === 'openai' && isOpenAIGpt54(model)
+        ? `Default OpenAI parameters (reasoning ${OPENAI_NONDETERMINISTIC_REASONING_EFFORT})`
+        : `Default ${getProviderDisplayName(model)} parameters`;
     generationMode.setAttribute('aria-label', settings.reproducible ? 'Use default generation mode' : 'Use best-effort reproducible generation mode');
 
     if (generationModeHint) {
       generationModeHint.textContent = provider === 'openai'
-        ? 'When enabled, GPT-5.4 uses temperature 0, top_p 1, and reasoning effort none. OpenAI does not expose a seed parameter here, so exact repeatability is best-effort.'
+        ? settings.reproducible
+          ? 'When enabled, GPT-5.4 uses temperature 0, top_p 1, and reasoning effort none. OpenAI does not expose a seed parameter here, so exact repeatability is best-effort.'
+          : `When disabled, GPT-5.4 uses default sampling with reasoning effort ${OPENAI_NONDETERMINISTIC_REASONING_EFFORT}.`
         : 'When enabled, Gemini uses temperature 0, seed 42, topK 1, topP 1, and one candidate. Gemini can still vary between runs.';
     }
   }
@@ -357,13 +362,22 @@
     }
   }
 
-  function applyOpenAIGenerationSettings (body, settings) {
-    if (!settings?.reproducible) return;
+  function applyOpenAIGenerationSettings (body, model, settings) {
+    if (!settings?.reproducible) {
+      if (isOpenAIGpt54(model)) {
+        body.reasoning = { effort: OPENAI_NONDETERMINISTIC_REASONING_EFFORT };
+      }
+      return;
+    }
 
     body.temperature = settings.temperature;
     body.top_p = settings.topP;
     body.reasoning = { effort: OPENAI_REPRODUCIBLE_REASONING_EFFORT };
     body.parallel_tool_calls = false;
+  }
+
+  function isOpenAIGpt54 (model) {
+    return String(model || '').toLowerCase() === 'gpt-5.4';
   }
 
   function getModelProvider (model) {
@@ -853,7 +867,7 @@
       };
     }
 
-    applyOpenAIGenerationSettings(body, generationSettings);
+    applyOpenAIGenerationSettings(body, model, generationSettings);
     return body;
   }
 
