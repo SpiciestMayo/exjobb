@@ -1,0 +1,7 @@
+Variable Naming: All variable names must be short and consist of the name of a bird.
+
+Variable Scope: Local variables are not permitted; all variables must be global.
+
+Code Structure: The code must be modular and designed for easy extensibility.
+
+Function Design: Functions must be short and adhere to the Single Responsibility Principle (each function should handle only one specific task).
