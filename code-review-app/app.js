@@ -1758,7 +1758,7 @@ ${diffText}
       const posCard = document.createElement('div');
       posCard.style.cssText = 'background:var(--bg-card2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;';
       posCard.innerHTML = '<ul style="list-style:none;display:flex;flex-direction:column;gap:6px;">' +
-        data.positives.map(p => `<li style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--text-muted);"><span style="color:var(--green);margin-top:1px;">✓</span>${escHtml(p)}</li>`).join('') +
+        data.positives.map(p => `<li style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--text);"><span style="color:var(--green);margin-top:1px;">✓</span>${escHtml(p)}</li>`).join('') +
         '</ul>';
       reviewResults.appendChild(posCard);
     }
@@ -1768,7 +1768,6 @@ ${diffText}
 
   function renderDiscussion (data) {
     const hasReview = Boolean(data);
-    const suggestions = getDiscussionSuggestions(data);
 
     discussionEmpty.style.display = hasReview ? 'none' : 'flex';
     discussionContent.style.display = hasReview ? 'flex' : 'none';
@@ -1785,20 +1784,21 @@ ${diffText}
       return;
     }
 
-    renderDiscussionSuggestions(suggestions);
-    renderChatMessages(discussionMessagesEl, discussionMessages, suggestions);
-    renderChatMessages(floatingChatMessages, discussionMessages, suggestions);
+    discussionSuggestions.innerHTML = '';
+    discussionSuggestions.style.display = 'none';
+    renderChatMessages(discussionMessagesEl, discussionMessages);
+    renderChatMessages(floatingChatMessages, discussionMessages);
 
     const statusText = discussionError
       ? `Discussion error: ${discussionError}`
       : discussionPending
         ? `${getProviderDisplayName(modelSelect.value)} is replying with the current review context.`
         : reviewAuditData
-          ? 'Context includes the uploaded code, optional review documents, diff, initial review, Review QA audit, and earlier chat turns.'
+          ? 'Context includes the uploaded code, optional review documents, diff, initial review, LLM verification results, and earlier chat turns.'
           : reviewAuditPending
-            ? 'Context includes the initial review. The Review QA audit is still running.'
+            ? 'Context includes the initial review. The LLM verification pass is still running.'
             : reviewAuditError
-              ? `Context includes the initial review. Review QA failed: ${reviewAuditError}`
+              ? `Context includes the initial review. LLM verification failed: ${reviewAuditError}`
               : 'Context includes the uploaded code, optional review documents, diff, initial review response, and earlier chat turns.';
 
     discussionStatus.textContent = statusText;
@@ -1837,26 +1837,7 @@ ${diffText}
     }
   }
 
-  function renderDiscussionSuggestions (suggestions) {
-    discussionSuggestions.innerHTML = '';
-
-    if (!suggestions.length) {
-      discussionSuggestions.style.display = 'none';
-      return;
-    }
-
-    discussionSuggestions.style.display = 'flex';
-    suggestions.forEach(text => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'chat-suggestion';
-      button.textContent = text;
-      button.addEventListener('click', () => sendDiscussionMessage(text));
-      discussionSuggestions.appendChild(button);
-    });
-  }
-
-  function renderChatMessages (container, messages, suggestions) {
+  function renderChatMessages (container, messages) {
     container.innerHTML = '';
 
     if (messages.length === 0) {
@@ -1865,7 +1846,6 @@ ${diffText}
       welcome.innerHTML = `
         <h4>Start a follow-up discussion</h4>
         <p>Ask why a finding matters, whether an issue is a false positive, or how to implement a fix.</p>
-        ${suggestions.length ? `<p class="chat-welcome-subtle">Try one of the suggested prompts above.</p>` : ''}
       `;
       container.appendChild(welcome);
     } else {
@@ -1941,7 +1921,7 @@ ${diffText}
 
     const apiKey = apiKeyInput.value.trim();
     if (!apiKey) {
-      reviewAuditError = 'Enter an API key before rerunning Review QA.';
+      reviewAuditError = 'Enter an API key before rerunning LLM verification.';
       rerenderAnalysisViews();
       return;
     }
@@ -1964,44 +1944,18 @@ ${diffText}
         modelSelect.value,
         auditResponse,
         buildReviewAuditResponseSchema(),
-        'review QA audit',
+        'LLM verification audit',
         getSelectedGenerationSettings()
       );
       reviewAuditResponseText = parsedAudit.text;
       reviewAuditData = normalizeReviewAuditData(parsedAudit.data);
       reviewAuditError = '';
     } catch (auditErr) {
-      reviewAuditError = auditErr?.message || 'Review QA pass failed.';
+      reviewAuditError = auditErr?.message || 'LLM verification pass failed.';
     } finally {
       reviewAuditPending = false;
       rerenderAnalysisViews();
     }
-  }
-
-  function getDiscussionSuggestions (data) {
-    if (!data) return [];
-
-    const questions = getVisibleDiscussionQuestions(data.discussion_questions || [])
-      .map(item => item.question)
-      .filter(Boolean);
-    const visibleIssues = getVisibleIssues(data.issues || []);
-    const pedagogicalIssue = visibleIssues.find(item => item.concept_to_learn);
-    const uncertainAssessment = (reviewAuditData?.issue_assessments || [])
-      .find(item => item.status === 'uncertain' || item.status === 'likely_false_positive');
-    const missedFinding = (reviewAuditData?.missed_findings || [])[0];
-    const learningFocus = (reviewAuditData?.learning_focus || [])[0];
-    const issues = visibleIssues
-      .slice(0, 2)
-      .map(item => `How would you fix "${item.title}" in ${formatLocation(item) || 'this change'}?`);
-
-    return [...new Set([
-      uncertainAssessment ? `Why did Review QA mark ${formatAuditTargetLabel(uncertainAssessment.target_id)} as ${formatAuditStatus(uncertainAssessment.status)}?` : '',
-      missedFinding ? `Teach me the missed risk "${missedFinding.title}".` : '',
-      learningFocus ? `Give me a short exercise for "${learningFocus.concept}".` : '',
-      pedagogicalIssue ? `Explain the principle behind "${pedagogicalIssue.title}" in simpler terms.` : '',
-      ...questions.slice(0, 3),
-      ...issues
-    ].filter(Boolean))].slice(0, 4);
   }
 
   function renderChatMessage (text) {
@@ -2089,20 +2043,20 @@ ${diffText}
     card.className = 'review-block review-audit-card';
     const statusClass = reviewAuditError ? 'audit-status-error' : reviewAuditPending ? 'audit-status-pending' : `audit-status-${reviewAuditData.overall_confidence}`;
     const statusText = reviewAuditError
-      ? 'QA failed'
+      ? 'LLM verification failed'
       : reviewAuditPending
-        ? 'QA running'
-        : `QA confidence: ${formatAuditConfidence(reviewAuditData.overall_confidence)}`;
+        ? 'LLM verification running'
+        : `LLM verified: ${formatAuditConfidence(reviewAuditData.overall_confidence)} confidence`;
     const summary = reviewAuditError
-      ? `The first review is still available. Review QA failed: ${reviewAuditError}`
+      ? `The first review is still available. LLM verification failed: ${reviewAuditError}`
       : reviewAuditPending
-        ? 'The initial review is ready. A second AI pass is validating findings and checking for missed risks.'
+        ? 'The initial review is ready. A second LLM pass is validating findings and checking for missed risks.'
         : reviewAuditData.validation_summary || 'The second-pass audit finished.';
 
     card.innerHTML = `
       <div class="review-audit-header">
         <div>
-          <p class="review-kicker">Review QA</p>
+          <p class="review-kicker">LLM Verification</p>
           <h3 class="review-block-title">Second-pass validation</h3>
         </div>
         <div class="review-audit-actions">
@@ -2117,7 +2071,7 @@ ${diffText}
 
   function renderReviewAuditRerunButton () {
     if (!reviewData) return '';
-    return `<button class="audit-rerun-btn" type="button" data-review-audit-rerun="true" ${reviewAuditPending ? 'disabled' : ''}>${reviewAuditPending ? 'Running Review QA...' : 'Rerun Review QA'}</button>`;
+    return `<button class="audit-rerun-btn" type="button" data-review-audit-rerun="true" ${reviewAuditPending ? 'disabled' : ''}>${reviewAuditPending ? 'Running LLM verification...' : 'Rerun LLM verification'}</button>`;
   }
 
   function bindReviewAuditActions (root) {
@@ -2155,32 +2109,32 @@ ${diffText}
 
     if (reviewAuditPending) {
       return `
-        <p class="review-section-title">Review QA</p>
+        <p class="review-section-title">LLM Verification</p>
         <div class="summary-overview review-audit-card">
           <div class="review-audit-header">
             <h3>Second-pass validation</h3>
             <div class="review-audit-actions">
-              <span class="audit-badge audit-status-pending">QA running</span>
+              <span class="audit-badge audit-status-pending">LLM verification running</span>
               ${renderReviewAuditRerunButton()}
             </div>
           </div>
-          <p>The initial review is ready. The advisory QA pass is checking findings, false positives, missed risks, and learning focus.</p>
+          <p>The initial review is ready. The advisory LLM pass is checking findings, false positives, missed risks, and learning focus.</p>
         </div>
       `;
     }
 
     if (reviewAuditError) {
       return `
-        <p class="review-section-title">Review QA</p>
+        <p class="review-section-title">LLM Verification</p>
         <div class="summary-overview review-audit-card">
           <div class="review-audit-header">
             <h3>Second-pass validation</h3>
             <div class="review-audit-actions">
-              <span class="audit-badge audit-status-error">QA failed</span>
+              <span class="audit-badge audit-status-error">LLM verification failed</span>
               ${renderReviewAuditRerunButton()}
             </div>
           </div>
-          <p>The first review is still available. Review QA failed: ${escHtml(reviewAuditError)}</p>
+          <p>The first review is still available. LLM verification failed: ${escHtml(reviewAuditError)}</p>
         </div>
       `;
     }
@@ -2190,7 +2144,7 @@ ${diffText}
     const falsePositive = (reviewAuditData.issue_assessments || []).filter(item => item.status === 'likely_false_positive').length;
 
     return `
-      <p class="review-section-title">Review QA</p>
+      <p class="review-section-title">LLM Verification</p>
       <div class="summary-overview review-audit-card">
         <div class="review-audit-header">
           <h3>Second-pass validation</h3>
@@ -2201,9 +2155,9 @@ ${diffText}
         </div>
         ${reviewAuditData.validation_summary ? `<p>${renderInlineMarkup(reviewAuditData.validation_summary)}</p>` : ''}
         <div class="audit-breakdown">
-          <span>QA validated: ${supported}</span>
-          <span>QA uncertain: ${uncertain}</span>
-          <span>QA flagged false positives: ${falsePositive}</span>
+          <span>LLM verified: ${supported}</span>
+          <span>LLM uncertain: ${uncertain}</span>
+          <span>LLM flagged false positives: ${falsePositive}</span>
           <span>Missed suggestions: ${(reviewAuditData.missed_findings || []).length}</span>
         </div>
       </div>
@@ -2237,7 +2191,7 @@ ${diffText}
   function renderLearningFocusHtml (items) {
     if (!items.length) return '';
     return `
-      <p class="review-section-title">Learning Focus from QA</p>
+      <p class="review-section-title">Learning Focus from LLM Verification</p>
       <div class="audit-list">
         ${items.map(item => `
           <article class="audit-list-item audit-learning-item">
@@ -2260,11 +2214,11 @@ ${diffText}
 
   function formatAuditStatus (status) {
     const labels = {
-      supported: 'QA validated',
-      uncertain: 'QA uncertain',
-      likely_false_positive: 'QA flagged false positive'
+      supported: 'LLM verified',
+      uncertain: 'LLM uncertain',
+      likely_false_positive: 'LLM flagged false positive'
     };
-    return labels[status] || 'QA uncertain';
+    return labels[status] || 'LLM uncertain';
   }
 
   function formatAuditConfidence (confidence) {
@@ -2621,11 +2575,11 @@ ${diffText}
     if (audit) {
       parts.push(
         '',
-        `Review QA status: ${formatAuditStatus(audit.status)} (${formatAuditConfidence(audit.confidence)} confidence)`,
-        `Review QA rationale: ${audit.rationale || 'No rationale provided.'}`
+        `LLM verification status: ${formatAuditStatus(audit.status)} (${formatAuditConfidence(audit.confidence)} confidence)`,
+        `LLM verification rationale: ${audit.rationale || 'No rationale provided.'}`
       );
       if (audit.evidence_needed) parts.push(`Evidence needed: ${audit.evidence_needed}`);
-      if (audit.suggested_action) parts.push(`Review QA suggested action: ${audit.suggested_action}`);
+      if (audit.suggested_action) parts.push(`LLM verification suggested action: ${audit.suggested_action}`);
     }
 
     parts.push(

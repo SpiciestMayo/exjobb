@@ -1293,11 +1293,11 @@ kbd {
 }
 .issue-file {
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--text-muted);
   font-family: monospace;
 }
 .review-issue-body { padding: 12px 14px; }
-.review-issue-body p { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+.review-issue-body p { font-size: 13px; color: var(--text); line-height: 1.7; }
 .review-issue-body pre {
   background: var(--bg-card2);
   border: 1px solid var(--border);
@@ -1335,8 +1335,8 @@ kbd {
 
 .issue-learning-copy {
   font-size: 13px;
-  color: var(--text-muted);
-  line-height: 1.6;
+  color: var(--text);
+  line-height: 1.7;
 }
 
 .review-audit-card {
@@ -1454,7 +1454,7 @@ kbd {
   border-radius: 6px;
   background: rgba(68,147,248,0.08);
   border: 1px solid rgba(68,147,248,0.14);
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 12px;
 }
 
@@ -1483,16 +1483,16 @@ kbd {
 }
 
 .audit-list-item p {
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.7;
   margin-top: 6px;
 }
 
 .review-section-title {
   font-size: 11px;
   font-weight: 700;
-  color: var(--text-dim);
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin: 16px 0 8px;
@@ -1535,7 +1535,7 @@ kbd {
 
 .review-block-copy {
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--text);
   line-height: 1.7;
   margin: 14px 0 10px;
 }
@@ -1549,7 +1549,7 @@ kbd {
 }
 
 .summary-bullets li {
-  color: var(--text-muted);
+  color: var(--text);
   line-height: 1.7;
 }
 
@@ -1667,7 +1667,7 @@ kbd {
 }
 .summary-overview p {
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--text);
   line-height: 1.7;
 }
 
