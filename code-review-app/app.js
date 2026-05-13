@@ -38,6 +38,9 @@
   const REPRODUCIBLE_CANDIDATE_COUNT = 1;
   const OPENAI_REPRODUCIBLE_REASONING_EFFORT = 'none';
   const OPENAI_NONDETERMINISTIC_REASONING_EFFORT = 'xhigh';
+  const GEMMA_REVIEW_FUNCTION_NAME = 'submit_code_review';
+  const GEMMA_AUDIT_FUNCTION_NAME = 'submit_review_audit';
+  const GEMMA_REPAIR_FUNCTION_NAME = 'submit_repaired_json';
 
   /* ── DOM refs ───────────────────────────────────────── */
   const uploadArea   = document.getElementById('upload-area');
@@ -333,6 +336,7 @@
     const settings = getSelectedGenerationSettings();
     const model = modelSelect.value;
     const provider = getModelProvider(model);
+    const providerName = getProviderDisplayName(model);
 
     generationModeValue.textContent = settings.reproducible
       ? provider === 'openai'
@@ -340,7 +344,7 @@
         : `Best-effort reproducible (temperature ${settings.temperature}, seed ${settings.seed})`
       : provider === 'openai' && isOpenAIGpt54(model)
         ? `Default OpenAI parameters (reasoning ${OPENAI_NONDETERMINISTIC_REASONING_EFFORT})`
-        : `Default ${getProviderDisplayName(model)} parameters`;
+        : `Default ${providerName} parameters`;
     generationMode.setAttribute('aria-label', settings.reproducible ? 'Use default generation mode' : 'Use best-effort reproducible generation mode');
 
     if (generationModeHint) {
@@ -348,7 +352,7 @@
         ? settings.reproducible
           ? 'When enabled, GPT-5.4 uses temperature 0, top_p 1, and reasoning effort none. OpenAI does not expose a seed parameter here, so exact repeatability is best-effort.'
           : `When disabled, GPT-5.4 uses default sampling with reasoning effort ${OPENAI_NONDETERMINISTIC_REASONING_EFFORT}.`
-        : 'When enabled, Gemini uses temperature 0, seed 42, topK 1, topP 1, and one candidate. Gemini can still vary between runs.';
+        : `When enabled, ${providerName} uses temperature 0, seed 42, topK 1, topP 1, and one candidate. ${providerName} can still vary between runs.`;
     }
   }
 
@@ -380,12 +384,17 @@
     return String(model || '').toLowerCase() === 'gpt-5.4';
   }
 
+  function isGemmaModel (model) {
+    return String(model || '').toLowerCase().startsWith('gemma-');
+  }
+
   function getModelProvider (model) {
-    return String(model || '').startsWith('gpt-') || String(model || '').startsWith('o') ? 'openai' : 'gemini';
+    return String(model || '').startsWith('gpt-') || String(model || '').startsWith('o') ? 'openai' : 'google';
   }
 
   function getProviderDisplayName (model) {
-    return getModelProvider(model) === 'openai' ? 'OpenAI' : 'Gemini';
+    if (getModelProvider(model) === 'openai') return 'OpenAI';
+    return isGemmaModel(model) ? 'Gemma' : 'Gemini';
   }
 
   function getModelDisplayName (model) {
@@ -766,7 +775,7 @@
     }
   }
 
-  /* ── Gemini API call ────────────────────────────────── */
+  /* ── Google AI Studio API calls ─────────────────────── */
   async function callReviewModel (apiKey, model, diff, fullFiles = {}, generationSettings = { reproducible: false }) {
     return getModelProvider(model) === 'openai'
       ? callOpenAIReview(apiKey, model, diff, fullFiles, generationSettings)
@@ -848,6 +857,157 @@
     return extractOpenAITextResponse(data, `OpenAI returned an empty repaired ${label} response.`);
   }
 
+  function buildGoogleGenerateContentUrl (apiKey, model) {
+    return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  }
+
+  function buildGoogleRequestBody (model, systemInstruction, contents, generationConfig = {}) {
+    const body = {
+      contents,
+      generationConfig
+    };
+
+    if (systemInstruction) {
+      body.systemInstruction = {
+        parts: [{ text: systemInstruction }]
+      };
+    }
+
+    applyGoogleModelDefaults(body.generationConfig, model);
+    return body;
+  }
+
+  function buildGoogleJsonGenerationConfig (model, schema) {
+    const config = {
+      maxOutputTokens: MAX_OUTPUT_TOKENS
+    };
+
+    if (!isGemmaModel(model)) {
+      config.responseMimeType = 'application/json';
+      config.responseJsonSchema = schema;
+    }
+
+    return config;
+  }
+
+  function buildGoogleStructuredSystemInstruction (model, instruction, schema) {
+    if (!isGemmaModel(model)) return instruction;
+
+    return buildGemmaFunctionCallingSystemInstruction(
+      instruction,
+      buildGemmaFunctionSchema(
+        GEMMA_REVIEW_FUNCTION_NAME,
+        'Submit the complete structured code review result.',
+        schema
+      )
+    );
+  }
+
+  function buildGemmaStructuredSystemInstruction (instruction, functionName, description, schema) {
+    return buildGemmaFunctionCallingSystemInstruction(
+      instruction,
+      buildGemmaFunctionSchema(functionName, description, schema)
+    );
+  }
+
+  function buildGemmaFunctionSchema (name, description, parametersSchema) {
+    return {
+      type: 'function',
+      function: {
+        name,
+        description,
+        parameters: normalizeGemmaFunctionParameters(parametersSchema)
+      }
+    };
+  }
+
+  function normalizeGemmaFunctionParameters (schema) {
+    if (!schema || typeof schema !== 'object') return schema;
+    if (Array.isArray(schema)) return schema.map(normalizeGemmaFunctionParameters);
+
+    const normalized = {};
+    for (const [key, value] of Object.entries(schema)) {
+      if (key === 'additionalProperties') continue;
+      if (key === 'minimum') continue;
+
+      if (key === 'type' && Array.isArray(value)) {
+        const nonNullTypes = value.filter(item => item !== 'null');
+        normalized.type = nonNullTypes[0] || 'string';
+        if (value.includes('null')) normalized.nullable = true;
+        continue;
+      }
+
+      normalized[key] = normalizeGemmaFunctionParameters(value);
+    }
+    return normalized;
+  }
+
+  function buildGemmaFunctionCallingSystemInstruction (instruction, functionSchema) {
+    return `${instruction}
+
+Gemma 4 function calling rules:
+- Use the following function schema exactly, following the Gemma 4 function-calling format.
+- Return one function call to "${functionSchema.function.name}" and no explanatory prose.
+- Fill the function arguments with the complete structured result.
+- Use empty arrays instead of omitted arrays.
+- Do not write planning, analysis, summaries, markdown, or text before or after the function call.
+- If function-call tokens are unavailable, your entire response must be only the function arguments as valid JSON.
+
+FUNCTION SCHEMA:
+${JSON.stringify(functionSchema, null, 2)}`;
+  }
+
+  function applyGoogleModelDefaults (generationConfig, model) {
+    if (!isGemmaModel(model)) return;
+
+    if (generationConfig.temperature === undefined) generationConfig.temperature = 1.0;
+    if (generationConfig.topP === undefined) generationConfig.topP = 0.95;
+    if (generationConfig.topK === undefined) generationConfig.topK = 64;
+    generationConfig.thinkingConfig = {
+      ...(generationConfig.thinkingConfig || {}),
+      thinkingLevel: 'high'
+    };
+  }
+
+  async function postGoogleGenerateContent (apiKey, model, body) {
+    try {
+      return await postGoogleGenerateContentOnce(apiKey, model, body);
+    } catch (err) {
+      if (!isRetriableGemmaThinkingError(err, model, body)) throw err;
+
+      const retryBody = JSON.parse(JSON.stringify(body));
+      delete retryBody.generationConfig.thinkingConfig;
+      return postGoogleGenerateContentOnce(apiKey, model, retryBody);
+    }
+  }
+
+  async function postGoogleGenerateContentOnce (apiKey, model, body) {
+    const res = await fetch(buildGoogleGenerateContentUrl(apiKey, model), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      const message = data?.error?.message || `HTTP ${res.status} ${res.statusText}`;
+      throw createStructuredApiError(message, getProviderDisplayName(model));
+    }
+
+    if (data?.error?.message) {
+      throw createStructuredApiError(data.error.message, getProviderDisplayName(model));
+    }
+
+    return data;
+  }
+
+  function isRetriableGemmaThinkingError (error, model, body) {
+    return isGemmaModel(model) &&
+      Boolean(body?.generationConfig?.thinkingConfig) &&
+      /internal error encountered/i.test(error?.apiMessage || error?.message || '');
+  }
+
   function buildOpenAIRequestBody (model, instructions, input, generationSettings, structuredOutput = null) {
     const body = {
       model,
@@ -926,87 +1086,59 @@
   }
 
   async function callGemini (apiKey, model, diff, fullFiles = {}, generationSettings = { reproducible: false }) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
     const truncated = diff.length > 30000 ? diff.slice(0, 30000) + '\n\n[... diff truncated for length ...]' : diff;
 
     const prompt = buildPrompt(truncated, fullFiles);
+    const schema = buildReviewResponseSchema();
 
-    const body = {
-      system_instruction: {
-        parts: [{ text: buildReviewSystemInstruction() }]
-      },
-      contents: [{
+    const body = buildGoogleRequestBody(
+      model,
+      buildGoogleStructuredSystemInstruction(model, buildReviewSystemInstruction(), schema),
+      [{
         role: 'user',
         parts: [{ text: prompt }]
       }],
-      generationConfig: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        responseMimeType: 'application/json',
-        responseJsonSchema: buildReviewResponseSchema()
-      }
-    };
+      buildGoogleJsonGenerationConfig(model, schema)
+    );
 
     applyGenerationSettings(body.generationConfig, generationSettings);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
-    }
-
-    const data = await res.json();
-    return extractGeminiTextResponse(data, 'Gemini returned an empty response.');
+    const data = await postGoogleGenerateContent(apiKey, model, body);
+    return extractGeminiTextResponse(data, `${getProviderDisplayName(model)} returned an empty response.`, model);
   }
 
   async function callGeminiReviewAudit (apiKey, model, diff, fullFiles, review, generationSettings = { reproducible: false }) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     const truncated = diff.length > 30000 ? diff.slice(0, 30000) + '\n\n[... diff truncated for length ...]' : diff;
+    const schema = buildReviewAuditResponseSchema();
 
-    const body = {
-      system_instruction: {
-        parts: [{ text: buildReviewAuditSystemInstruction() }]
-      },
-      contents: [{
+    const body = buildGoogleRequestBody(
+      model,
+      isGemmaModel(model)
+        ? buildGemmaStructuredSystemInstruction(
+          buildReviewAuditSystemInstruction(),
+          GEMMA_AUDIT_FUNCTION_NAME,
+          'Submit the complete structured second-pass review audit result.',
+          schema
+        )
+        : buildGoogleStructuredSystemInstruction(model, buildReviewAuditSystemInstruction(), schema),
+      [{
         role: 'user',
         parts: [{ text: buildReviewAuditPrompt(truncated, fullFiles, review) }]
       }],
-      generationConfig: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        responseMimeType: 'application/json',
-        responseJsonSchema: buildReviewAuditResponseSchema()
-      }
-    };
+      buildGoogleJsonGenerationConfig(model, schema)
+    );
 
     applyGenerationSettings(body.generationConfig, generationSettings);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
-    }
-
-    const data = await res.json();
-    return extractGeminiTextResponse(data, 'Gemini returned an empty review QA response.');
+    const data = await postGoogleGenerateContent(apiKey, model, body);
+    return extractGeminiTextResponse(data, `${getProviderDisplayName(model)} returned an empty review QA response.`, model);
   }
 
   async function callGeminiDiscussion (apiKey, model, history, generationSettings = { reproducible: false }) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    const body = {
-      system_instruction: {
-        parts: [{ text: buildDiscussionSystemInstruction() }]
-      },
-      contents: [
+    const body = buildGoogleRequestBody(
+      model,
+      buildDiscussionSystemInstruction(),
+      [
         {
           role: 'user',
           parts: [{ text: buildDiscussionContextPrompt() }]
@@ -1020,71 +1152,49 @@
           parts: [{ text: message.content }]
         }))
       ],
-      generationConfig: {
+      {
         maxOutputTokens: MAX_OUTPUT_TOKENS
       }
-    };
+    );
 
     applyGenerationSettings(body.generationConfig, generationSettings);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
-    }
-
-    const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error('Gemini returned an empty discussion response.');
-    return text.trim();
+    const data = await postGoogleGenerateContent(apiKey, model, body);
+    return extractGeminiTextResponse(data, `${getProviderDisplayName(model)} returned an empty discussion response.`, model).text;
   }
 
   async function callGeminiJsonRepair (apiKey, model, malformedText, schema, label, generationSettings = { reproducible: false }, responseMeta = {}) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    const body = {
-      system_instruction: {
-        parts: [{ text: buildJsonRepairSystemInstruction() }]
-      },
-      contents: [{
+    const body = buildGoogleRequestBody(
+      model,
+      isGemmaModel(model)
+        ? buildGemmaStructuredSystemInstruction(
+          buildJsonRepairSystemInstruction(),
+          GEMMA_REPAIR_FUNCTION_NAME,
+          'Submit the repaired JSON payload matching the requested schema.',
+          schema
+        )
+        : buildGoogleStructuredSystemInstruction(model, buildJsonRepairSystemInstruction(), schema),
+      [{
         role: 'user',
         parts: [{ text: buildJsonRepairPrompt(malformedText, label, responseMeta) }]
       }],
-      generationConfig: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        responseMimeType: 'application/json',
-        responseJsonSchema: schema
-      }
-    };
+      buildGoogleJsonGenerationConfig(model, schema)
+    );
 
     applyGenerationSettings(body.generationConfig, generationSettings);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      throw createStructuredApiError(errBody?.error?.message || `HTTP ${res.status} ${res.statusText}`, getProviderDisplayName(model));
-    }
-
-    const data = await res.json();
-    return extractGeminiTextResponse(data, `Gemini returned an empty repaired ${label} response.`);
+    const data = await postGoogleGenerateContent(apiKey, model, body);
+    return extractGeminiTextResponse(data, `${getProviderDisplayName(model)} returned an empty repaired ${label} response.`, model);
   }
 
-  function extractGeminiTextResponse (data, emptyMessage) {
+  function extractGeminiTextResponse (data, emptyMessage, model = '') {
     const candidate = data?.candidates?.[0] || null;
     const finishReason = candidate?.finishReason || '';
-    const text = (candidate?.content?.parts || [])
+    const rawText = (candidate?.content?.parts || [])
       .map(part => part?.text || '')
       .join('')
       .trim();
+    const text = sanitizeGoogleTextResponse(rawText, model);
     const stoppedEarly = finishReason === 'MAX_TOKENS';
 
     if (!text) {
@@ -1098,9 +1208,45 @@
       candidate,
       stoppedEarly,
       stopMessage: stoppedEarly
-        ? 'Gemini stopped early with MAX_TOKENS, so the JSON may be incomplete. Try fewer uploaded files or a smaller diff if repair fails.'
+        ? `${getProviderDisplayName(model)} stopped early with MAX_TOKENS, so the JSON may be incomplete. Try fewer uploaded files or a smaller diff if repair fails.`
         : ''
     };
+  }
+
+  function sanitizeGoogleTextResponse (text, model) {
+    let clean = String(text || '').trim();
+    if (isGemmaModel(model)) {
+      clean = clean.replace(/^<\|channel\>thought\s*[\s\S]*?<channel\|>\s*/i, '').trim();
+      clean = clean.replace(/^<\|think\|>\s*/i, '').trim();
+      const toolCallArguments = extractGemmaStructuredToolCallArguments(clean);
+      if (toolCallArguments) return JSON.stringify(toolCallArguments);
+    }
+    return clean;
+  }
+
+  function extractGemmaStructuredToolCallArguments (text) {
+    const match = String(text || '').match(/<\|tool_call>call:([A-Za-z_][A-Za-z0-9_]*)\{([\s\S]*?)\}<tool_call\|>/);
+    if (!match) return null;
+
+    const [, name, rawArguments] = match;
+    if (![GEMMA_REVIEW_FUNCTION_NAME, GEMMA_AUDIT_FUNCTION_NAME, GEMMA_REPAIR_FUNCTION_NAME].includes(name)) {
+      return null;
+    }
+
+    return parseGemmaToolArguments(rawArguments);
+  }
+
+  function parseGemmaToolArguments (rawArguments) {
+    const jsonish = `{${String(rawArguments || '').trim()}}`
+      .replace(/<\|"\|>([\s\S]*?)<\|"\|>/g, (_, value) => JSON.stringify(value))
+      .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:/g, '$1"$2":')
+      .replace(/,\s*([}\]])/g, '$1');
+
+    try {
+      return JSON.parse(jsonish);
+    } catch {
+      return null;
+    }
   }
 
   function buildReviewResponseSchema () {
@@ -1629,11 +1775,8 @@ ${diffText}
 
   /* ── Parse Gemini response ──────────────────────────── */
   function parseModelResponse (text) {
-    // Strip possible markdown code fences
-    let clean = text.trim();
-    clean = clean.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     try {
-      return JSON.parse(clean);
+      return parseModelJsonStrict(text);
     } catch {
       // Fallback: wrap raw text as an info issue
       return {
@@ -1650,9 +1793,107 @@ ${diffText}
 
   /* ── Render review ──────────────────────────────────── */
   function parseModelJsonStrict (text) {
-    let clean = String(text || '').trim();
-    clean = clean.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    return JSON.parse(clean);
+    const candidates = getJsonParseCandidates(text);
+    let lastError = null;
+
+    for (const candidate of candidates) {
+      try {
+        return JSON.parse(candidate);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    throw lastError || new SyntaxError('No JSON object found in model response.');
+  }
+
+  function getJsonParseCandidates (text) {
+    const raw = String(text || '').trim();
+    if (!raw) return [];
+
+    const candidates = [];
+    const addCandidate = value => {
+      const candidate = String(value || '').trim();
+      if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+    };
+
+    addCandidate(stripSingleMarkdownFence(raw));
+
+    const jsonFencePattern = /```json\s*([\s\S]*?)```/gi;
+    const jsonFenceMatches = Array.from(raw.matchAll(jsonFencePattern));
+    for (let i = jsonFenceMatches.length - 1; i >= 0; i--) {
+      addCandidate(jsonFenceMatches[i][1]);
+    }
+
+    const anyFencePattern = /```(?:[A-Za-z0-9_-]+)?\s*([\s\S]*?)```/g;
+    const anyFenceMatches = Array.from(raw.matchAll(anyFencePattern));
+    for (let i = anyFenceMatches.length - 1; i >= 0; i--) {
+      addCandidate(anyFenceMatches[i][1]);
+    }
+
+    const balancedJson = extractLastBalancedJsonValue(raw);
+    if (balancedJson) addCandidate(balancedJson);
+
+    return candidates;
+  }
+
+  function stripSingleMarkdownFence (text) {
+    return String(text || '')
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+  }
+
+  function extractLastBalancedJsonValue (text) {
+    const raw = String(text || '');
+    let best = '';
+
+    for (let i = raw.length - 1; i >= 0; i--) {
+      const ch = raw[i];
+      if (ch !== '{' && ch !== '[') continue;
+
+      const value = extractBalancedJsonValueFrom(raw, i);
+      if (value.length > best.length) best = value;
+    }
+
+    return best;
+  }
+
+  function extractBalancedJsonValueFrom (text, startIndex) {
+    const opener = text[startIndex];
+    const closer = opener === '{' ? '}' : ']';
+    const stack = [closer];
+    let inString = false;
+    let escaped = false;
+
+    for (let i = startIndex + 1; i < text.length; i++) {
+      const ch = text[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === '{') {
+        stack.push('}');
+      } else if (ch === '[') {
+        stack.push(']');
+      } else if (ch === '}' || ch === ']') {
+        if (stack.pop() !== ch) return '';
+        if (!stack.length) return text.slice(startIndex, i + 1).trim();
+      }
+    }
+
+    return '';
   }
 
   async function parseModelJsonWithRepair (apiKey, model, response, schema, label, generationSettings = { reproducible: false }) {
@@ -1660,9 +1901,10 @@ ${diffText}
     const responseMeta = typeof response === 'string' ? {} : response || {};
 
     try {
+      const data = parseModelJsonStrict(text);
       return {
-        data: parseModelJsonStrict(text),
-        text,
+        data,
+        text: JSON.stringify(data, null, 2),
         repaired: false
       };
     } catch (parseErr) {
@@ -1673,9 +1915,10 @@ ${diffText}
         throw new Error(getJsonParseErrorMessage(repairErr, responseMeta, parseErr));
       }
       try {
+        const data = parseModelJsonStrict(repairResponse.text);
         return {
-          data: parseModelJsonStrict(repairResponse.text),
-          text: repairResponse.text,
+          data,
+          text: JSON.stringify(data, null, 2),
           repaired: true
         };
       } catch (repairParseErr) {
@@ -2381,8 +2624,12 @@ ${diffText}
   }
 
   function getSelectedProviderTroubleshootingHint () {
-    return getModelProvider(modelSelect.value) === 'openai'
-      ? 'Check your API key, model selection, and whether your OpenAI account has access to GPT-5.4.'
+    const selectedModel = modelSelect.value;
+    if (getModelProvider(selectedModel) === 'openai') {
+      return 'Check your API key, model selection, and whether your OpenAI account has access to GPT-5.4.';
+    }
+    return isGemmaModel(selectedModel)
+      ? 'Check your API key, model selection, and whether Gemma models are available for your Google AI Studio project.'
       : 'Check your API key, model selection, and ensure the Gemini API is enabled in Google AI Studio.';
   }
 
